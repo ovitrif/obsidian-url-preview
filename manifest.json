@@ -1,0 +1,10 @@
+{
+	"id": "url-preview",
+	"name": "URL Preview",
+	"version": "0.1.0",
+	"minAppVersion": "1.7.6",
+	"description": "Preview external URLs on hover. Works in Editor, Live Preview, and Reader modes.",
+	"author": "ovitrif",
+	"authorUrl": "https://github.com/ovitrif",
+	"isDesktopOnly": false
+}

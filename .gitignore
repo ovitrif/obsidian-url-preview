@@ -1,0 +1,12 @@
+.DS_Store
+.vscode
+.idea
+node_modules
+*.iml
+data.json
+*.map
+*.ai
+.claude/*.local*
+# Don't include the compiled main.js file in the repo.
+# It should be uploaded to GitHub releases instead.
+main.js
