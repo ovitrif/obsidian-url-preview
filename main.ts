@@ -41,6 +41,11 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
             });
+            this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
+                if (e.key === 'Escape' && this.activePreview) {
+                    this.cleanupActivePreview();
+                }
+            });
         };
 
         handleWindow(document);
@@ -128,7 +133,7 @@ export default class LinkPreviewPlugin extends Plugin {
         iframe.onload = () => {
             // Small delay to let page render before showing
             setTimeout(() => {
-                iframe.style.visibility = 'visible';
+                iframe.addClass('is-loaded');
                 loading.remove();  // Remove entirely to stop infinite animation
             }, 50);
         };
@@ -377,8 +382,8 @@ export default class LinkPreviewPlugin extends Plugin {
             }
             // Check for Obsidian's external-link class which wraps the anchor
             if (ancestor.classList.contains('external-link') || ancestor.classList.contains('cm-link')) {
-                const anchor = ancestor.querySelector('a[href]') as HTMLAnchorElement | null;
-                if (anchor?.href) {
+                const anchor = ancestor.querySelector('a[href]');
+                if (anchor instanceof HTMLAnchorElement && anchor.href) {
                     return this.normalizeUrl(anchor.href);
                 }
             }
@@ -398,7 +403,7 @@ export default class LinkPreviewPlugin extends Plugin {
         try {
             const url = new URL(trimmed);
             return url.href;
-        } catch (e) {
+        } catch {
             return null;
         }
     }

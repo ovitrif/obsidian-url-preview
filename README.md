@@ -8,6 +8,7 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 - Hover any external link to see a website preview
 - Works in all editing modes (Editor, Live Preview, Reader)
+- Press ESC to dismiss the preview
 - Customizable preview window size
 - Configurable hover delay
 - Clean interface that matches Obsidian's theme
