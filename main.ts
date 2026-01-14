@@ -7,8 +7,8 @@ interface LinkPreviewSettings {
 }
 
 const DEFAULT_SETTINGS: Readonly<LinkPreviewSettings> = {
-    maxPreviewHeight: 400,
-    maxPreviewWidth: 600,
+    maxPreviewHeight: 960,
+    maxPreviewWidth: 720,
     hoverDelay: 500,
 };
 

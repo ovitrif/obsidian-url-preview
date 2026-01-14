@@ -61,10 +61,10 @@
     visibility: visible;
 }
 
-/* GitHub-specific: crop top to hide flickering sticky header */
+/* GitHub-specific: crop top to hide sticky header and progress bar */
 .preview-iframe-wrapper.github-preview iframe {
-    margin-top: -60px;
-    height: calc(100% + 60px);
+    margin-top: -68px;
+    height: calc(100% + 68px);
 }
 
 /* Loading state indicator */
