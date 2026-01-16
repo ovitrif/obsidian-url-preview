@@ -93,3 +93,8 @@
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
 }
+
+/* Settings tab - disabled state */
+.setting-disabled {
+    opacity: 0.5;
+}

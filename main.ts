@@ -1,15 +1,23 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownView } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, MarkdownView, Platform } from 'obsidian';
+
+type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
 
 interface LinkPreviewSettings {
     maxPreviewHeight: number;
     maxPreviewWidth: number;
     hoverDelay: number;
+    requireModifierKey: boolean;
+    modifierKey: ModifierKeyType;
+    closeOnModifierRelease: boolean;
 }
 
-const DEFAULT_SETTINGS: Readonly<LinkPreviewSettings> = {
+const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKey'>> & { modifierKey?: ModifierKeyType } = {
     maxPreviewHeight: 960,
     maxPreviewWidth: 720,
     hoverDelay: 500,
+    requireModifierKey: true,
+    closeOnModifierRelease: true,
+    // modifierKey default is set dynamically in loadSettings() based on platform
 };
 
 export default class LinkPreviewPlugin extends Plugin {
@@ -45,6 +53,16 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
                 }
+                // Handle modifier key press while hovering over link
+                if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
+                    this.handleModifierKeyDown();
+                }
+            });
+            this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
+                // Close preview when modifier key is released
+                if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
+                    this.handleModifierKeyUp();
+                }
             });
         };
 
@@ -60,6 +78,11 @@ export default class LinkPreviewPlugin extends Plugin {
 
         // Skip if event is from inside the active preview (prevents flickering)
         if (this.activePreview?.element.contains(target)) {
+            return;
+        }
+
+        // Check for modifier key requirement
+        if (this.settings.requireModifierKey && !this.isModifierKeyPressed(event)) {
             return;
         }
 
@@ -214,8 +237,62 @@ export default class LinkPreviewPlugin extends Plugin {
         }
     }
 
+    private isModifierKeyPressed(event: MouseEvent): boolean {
+        const keyMap: Record<ModifierKeyType, keyof MouseEvent> = {
+            meta: 'metaKey',
+            ctrl: 'ctrlKey',
+            alt: 'altKey',
+            shift: 'shiftKey',
+        };
+        const property = keyMap[this.settings.modifierKey];
+        return property ? Boolean(event[property]) : false;
+    }
+
+    private isModifierKeyEvent(event: KeyboardEvent): boolean {
+        const keyMap: Record<ModifierKeyType, string> = {
+            meta: 'Meta',
+            ctrl: 'Control',
+            alt: 'Alt',
+            shift: 'Shift',
+        };
+        return event.key === keyMap[this.settings.modifierKey];
+    }
+
+    private handleModifierKeyDown() {
+        // If already showing a preview, do nothing
+        if (this.activePreview) return;
+
+        // Find element under cursor
+        const elementUnderCursor = document.elementFromPoint(this.lastMouseX, this.lastMouseY);
+        if (!elementUnderCursor) return;
+
+        const linkInfo = this.findLinkElement(elementUnderCursor, null);
+        if (linkInfo) {
+            // Clear any existing timeout and show preview after delay
+            if (this.hoverTimeout) {
+                window.clearTimeout(this.hoverTimeout);
+            }
+            this.hoverTimeout = window.setTimeout(() => {
+                this.showPreview(linkInfo.element, linkInfo.url);
+            }, this.settings.hoverDelay);
+        }
+    }
+
+    private handleModifierKeyUp() {
+        if (this.settings.closeOnModifierRelease) {
+            this.cleanupActivePreview();
+        }
+    }
+
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        const platformDefault: ModifierKeyType = Platform.isMacOS ? 'meta' : 'ctrl';
+        const loaded = await this.loadData();
+        this.settings = Object.assign(
+            {},
+            DEFAULT_SETTINGS,
+            { modifierKey: platformDefault },
+            loaded
+        );
     }
 
     async saveSettings() {
@@ -421,6 +498,56 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         const {containerEl} = this;
 
         containerEl.empty();
+
+        const isModifierKeyEnabled = this.plugin.settings.requireModifierKey;
+
+        new Setting(containerEl)
+            .setName('Require modifier key')
+            .setDesc('Only show preview when holding a modifier key while hovering')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.requireModifierKey)
+                .onChange(async (value) => {
+                    this.plugin.settings.requireModifierKey = value;
+                    await this.plugin.saveSettings();
+                    // Refresh display to update disabled/opacity states
+                    this.display();
+                }));
+
+        const modifierKeySetting = new Setting(containerEl)
+            .setName('Modifier key')
+            .setDesc('Which key to hold for showing previews')
+            .addDropdown(dropdown => {
+                dropdown
+                    .addOption('meta', Platform.isMacOS ? 'Command (⌘)' : 'Meta/Win')
+                    .addOption('ctrl', Platform.isMacOS ? 'Control (⌃)' : 'Ctrl')
+                    .addOption('alt', Platform.isMacOS ? 'Option (⌥)' : 'Alt')
+                    .addOption('shift', 'Shift')
+                    .setValue(this.plugin.settings.modifierKey)
+                    .onChange(async (value) => {
+                        this.plugin.settings.modifierKey = value as ModifierKeyType;
+                        await this.plugin.saveSettings();
+                    });
+                dropdown.setDisabled(!isModifierKeyEnabled);
+            });
+        if (!isModifierKeyEnabled) {
+            modifierKeySetting.settingEl.addClass('setting-disabled');
+        }
+
+        const closeOnReleaseSetting = new Setting(containerEl)
+            .setName('Close on key release')
+            .setDesc('Close preview when modifier key is released')
+            .addToggle(toggle => {
+                toggle
+                    .setValue(this.plugin.settings.closeOnModifierRelease)
+                    .onChange(async (value) => {
+                        this.plugin.settings.closeOnModifierRelease = value;
+                        await this.plugin.saveSettings();
+                    });
+                toggle.setDisabled(!isModifierKeyEnabled);
+            });
+        if (!isModifierKeyEnabled) {
+            closeOnReleaseSetting.settingEl.addClass('setting-disabled');
+        }
 
         new Setting(containerEl)
             .setName('Hover delay')

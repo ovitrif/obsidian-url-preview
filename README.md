@@ -6,11 +6,11 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 ## Features
 
-- Hover any external link to see a website preview
+- Hold a modifier key (⌘/Ctrl) + hover to preview any external link
 - Works in all editing modes (Editor, Live Preview, Reader)
 - Press ESC to dismiss the preview
-- Customizable preview window size
-- Configurable hover delay
+- Configurable modifier key (Command, Control, Alt, or Shift)
+- Customizable preview window size and hover delay
 - Clean interface that matches Obsidian's theme
 
 ## Installation
@@ -22,13 +22,16 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 ## Settings
 
+- **Require Modifier Key**: Only show preview when holding a modifier key (enabled by default)
+- **Modifier Key**: Choose which key to hold (Command, Control, Alt, or Shift)
+- **Close on Key Release**: Close preview when modifier key is released (or keep open until mouse leave/ESC)
 - **Hover Delay**: How long to wait before showing the preview (in milliseconds)
 - **Maximum Height**: Maximum height of the preview window (in pixels)
 - **Maximum Width**: Maximum width of the preview window (in pixels)
 
 ## Usage
 
-Hover over any external link in your notes to see a preview of the webpage.
+Hold your modifier key (⌘ on Mac, Ctrl on Windows/Linux by default) and hover over any external link to see a preview.
 
 ## Limitations
 

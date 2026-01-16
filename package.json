@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-url-preview",
-	"version": "0.1.0",
+	"version": "0.1.3",
 	"description": "Preview external URLs on hover. Works in Editor, Live Preview, and Reader modes.",
 	"main": "main.js",
 	"scripts": {

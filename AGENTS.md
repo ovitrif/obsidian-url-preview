@@ -50,7 +50,10 @@ The main plugin class handles the lifecycle and core logic:
 
 #### LinkPreviewSettingTab
 
-Settings UI for configuring preview dimensions and hover delay:
+Settings UI for configuring plugin behavior:
+- `requireModifierKey`: Toggle to require holding a modifier key for previews (default: true).
+- `modifierKey`: Which modifier key to use (meta/ctrl/alt/shift, platform-aware default).
+- `closeOnModifierRelease`: Whether to close preview when modifier key is released (default: true).
 - `hoverDelay`: Time in ms before preview appears.
 - `maxPreviewHeight` / `maxPreviewWidth`: Dimensions of the preview window.
 
@@ -77,3 +80,59 @@ Uses `Platform.isMacOS` to determine modifier key (Meta vs Control) for editor m
 ## Rules
 
 - ALWAYS build after changes
+
+## Release Procedure
+
+When preparing a release, follow these steps in order:
+
+### 1. Update CHANGELOG.md
+
+Add a new version entry following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format:
+- Use sections: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`
+- Date format: `YYYY-MM-DD`
+- List user-facing changes only
+
+### 2. Version Bump
+
+Follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
+- **MAJOR**: Breaking changes
+- **MINOR**: New features (backward compatible)
+- **PATCH**: Bug fixes (backward compatible)
+
+Steps:
+1. Update `version` in `package.json`
+2. Run `npm run version` (updates `manifest.json` and `versions.json`)
+
+### 3. Update README.md
+
+Review if changes warrant README updates:
+- New features → Update Features section
+- New settings → Update Settings section
+- Changed behavior → Update Usage section
+
+### 4. Demo Recording
+
+Consider re-recording the demo GIF if:
+- UI changed visually
+- New user-facing feature added
+- Existing behavior changed significantly
+
+Save as `demo.gif` in project root.
+
+### 5. Build & Deploy for Testing
+
+Read `VAULT` path from `.env` file, then:
+```bash
+npm run build
+cp main.js manifest.json styles.css "$VAULT/.obsidian/plugins/url-preview/"
+```
+
+### 6. Commit & Tag
+
+After user confirms testing is complete:
+```bash
+git add -A
+git commit -m "Release X.Y.Z"
+git tag X.Y.Z
+git push && git push --tags
+```
