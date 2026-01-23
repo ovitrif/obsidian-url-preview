@@ -81,6 +81,39 @@ Uses `Platform.isMacOS` to determine modifier key (Meta vs Control) for editor m
 
 - ALWAYS build after changes
 
+## Obsidian Plugin Guidelines
+
+This plugin must pass ObsidianBot automated review. Follow these rules to avoid PR rejection.
+
+### Required (will block PR approval)
+
+1. **No direct style manipulation** - Use CSS classes instead
+   - ❌ `element.style.visibility = 'visible'`
+   - ❌ `element.style.opacity = '0.5'`
+   - ✅ `element.addClass('is-visible')`
+   - Define styles in `styles.css`, toggle via `addClass()`/`removeClass()`
+
+2. **No unnecessary type assertions**
+   - ❌ `element.querySelector('a') as HTMLAnchorElement`
+   - ✅ `const el = element.querySelector('a'); if (el instanceof HTMLAnchorElement) { ... }`
+
+3. **No unused variables**
+   - ❌ `catch (e) { return null; }` (if `e` unused)
+   - ✅ `catch { return null; }`
+
+### Best Practices
+
+- Use `Platform.isMacOS` for OS detection (not `navigator` API)
+- Use Obsidian's APIs over browser APIs where available
+- Avoid regex lookbehinds (iOS Safari compatibility)
+- Use sentence case for UI strings
+
+### References
+
+- [Obsidian ESLint Plugin](https://github.com/obsidianmd/eslint-plugin)
+- [Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)
+- [PR Review History](https://github.com/obsidianmd/obsidian-releases/pull/9474)
+
 ## Release Procedure
 
 When preparing a release, follow these steps in order:
