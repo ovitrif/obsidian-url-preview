@@ -2,22 +2,43 @@ import { App, Plugin, PluginSettingTab, Setting, MarkdownView, Platform } from '
 
 type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
 
+interface ModifierKeyConfig {
+    meta: boolean;
+    ctrl: boolean;
+    alt: boolean;
+    shift: boolean;
+}
+
 interface LinkPreviewSettings {
     maxPreviewHeight: number;
     maxPreviewWidth: number;
     hoverDelay: number;
     requireModifierKey: boolean;
-    modifierKey: ModifierKeyType;
+    modifierKeys: ModifierKeyConfig;
     closeOnModifierRelease: boolean;
+    mouseStillnessDelay: number;
 }
 
-const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKey'>> & { modifierKey?: ModifierKeyType } = {
+// Legacy settings interface for migration
+interface LegacyLinkPreviewSettings {
+    modifierKey?: ModifierKeyType;
+}
+
+const DEFAULT_MODIFIER_KEYS: ModifierKeyConfig = {
+    meta: false,
+    ctrl: false,
+    alt: false,
+    shift: false,
+};
+
+const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys'>> = {
     maxPreviewHeight: 960,
     maxPreviewWidth: 720,
     hoverDelay: 500,
     requireModifierKey: true,
     closeOnModifierRelease: true,
-    // modifierKey default is set dynamically in loadSettings() based on platform
+    mouseStillnessDelay: 0,
+    // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
 export default class LinkPreviewPlugin extends Plugin {
@@ -30,6 +51,9 @@ export default class LinkPreviewPlugin extends Plugin {
     private hoverTimeout?: number;
     private lastMouseX = 0;
     private lastMouseY = 0;
+    private modifierState: ModifierKeyConfig = { meta: false, ctrl: false, alt: false, shift: false };
+    private lastMovementTime = 0;
+    private stillnessCheckTimeout?: number;
 
     async onload() {
         await this.loadSettings();
@@ -46,6 +70,12 @@ export default class LinkPreviewPlugin extends Plugin {
         const handleWindow = (doc: Document) => {
             this.registerDomEvent(doc, 'mouseover', this.handleLinkHover.bind(this));
             this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
+                // Track mouse stillness - only update time if mouse moved significantly (>2px)
+                const dx = Math.abs(e.clientX - this.lastMouseX);
+                const dy = Math.abs(e.clientY - this.lastMouseY);
+                if (dx > 2 || dy > 2) {
+                    this.lastMovementTime = Date.now();
+                }
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
             });
@@ -53,16 +83,24 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
                 }
+                // Update modifier state
+                this.updateModifierState(e);
                 // Handle modifier key press while hovering over link
                 if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
                     this.handleModifierKeyDown();
                 }
             });
             this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
-                // Close preview when modifier key is released
+                // Update modifier state
+                this.updateModifierState(e);
+                // Close preview when any required modifier key is released
                 if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
                     this.handleModifierKeyUp();
                 }
+            });
+            // Reset modifier state on window blur
+            this.registerDomEvent(doc.defaultView ?? window, 'blur', () => {
+                this.modifierState = { meta: false, ctrl: false, alt: false, shift: false };
             });
         };
 
@@ -70,6 +108,13 @@ export default class LinkPreviewPlugin extends Plugin {
         this.registerEvent(
             this.app.workspace.on('window-open', ({win}) => handleWindow(win.document))
         );
+    }
+
+    private updateModifierState(e: KeyboardEvent) {
+        this.modifierState.meta = e.metaKey;
+        this.modifierState.ctrl = e.ctrlKey;
+        this.modifierState.alt = e.altKey;
+        this.modifierState.shift = e.shiftKey;
     }
 
     private handleLinkHover(event: MouseEvent) {
@@ -96,6 +141,12 @@ export default class LinkPreviewPlugin extends Plugin {
             window.clearTimeout(this.hoverTimeout);
         }
 
+        // Clear any existing stillness check
+        if (this.stillnessCheckTimeout) {
+            window.clearTimeout(this.stillnessCheckTimeout);
+            this.stillnessCheckTimeout = undefined;
+        }
+
         // If hovering the same link that has an active preview, clear any pending cleanup
         if (this.activePreview?.link === linkElement) {
             if (this.cleanupTimeout) {
@@ -110,7 +161,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
         // Set timeout for showing preview
         this.hoverTimeout = window.setTimeout(() => {
-            this.showPreview(linkElement, url);
+            this.tryShowPreview(linkElement, url);
         }, this.settings.hoverDelay);
 
         // Add mouse leave listener to target
@@ -124,6 +175,22 @@ export default class LinkPreviewPlugin extends Plugin {
         };
 
         linkElement.addEventListener('mouseleave', handleMouseLeave);
+    }
+
+    private tryShowPreview(linkElement: HTMLElement, url: string) {
+        // Check mouse stillness if delay is configured
+        if (this.settings.mouseStillnessDelay > 0) {
+            const timeSinceMovement = Date.now() - this.lastMovementTime;
+            if (timeSinceMovement < this.settings.mouseStillnessDelay) {
+                // Mouse hasn't been still long enough, reschedule check
+                const remainingTime = this.settings.mouseStillnessDelay - timeSinceMovement;
+                this.stillnessCheckTimeout = window.setTimeout(() => {
+                    this.tryShowPreview(linkElement, url);
+                }, Math.min(remainingTime, 50)); // Poll at most every 50ms
+                return;
+            }
+        }
+        this.showPreview(linkElement, url);
     }
 
     private showPreview(link: HTMLElement, url: string) {
@@ -235,32 +302,50 @@ export default class LinkPreviewPlugin extends Plugin {
             window.clearTimeout(this.cleanupTimeout);
             this.cleanupTimeout = undefined;
         }
+        if (this.stillnessCheckTimeout) {
+            window.clearTimeout(this.stillnessCheckTimeout);
+            this.stillnessCheckTimeout = undefined;
+        }
     }
 
     private isModifierKeyPressed(event: MouseEvent): boolean {
-        const keyMap: Record<ModifierKeyType, keyof MouseEvent> = {
-            meta: 'metaKey',
-            ctrl: 'ctrlKey',
-            alt: 'altKey',
-            shift: 'shiftKey',
-        };
-        const property = keyMap[this.settings.modifierKey];
-        return property ? Boolean(event[property]) : false;
+        const keys = this.settings.modifierKeys;
+        // Check if ALL required modifiers are pressed
+        if (keys.meta && !event.metaKey) return false;
+        if (keys.ctrl && !event.ctrlKey) return false;
+        if (keys.alt && !event.altKey) return false;
+        if (keys.shift && !event.shiftKey) return false;
+        // At least one modifier must be required
+        return keys.meta || keys.ctrl || keys.alt || keys.shift;
     }
 
     private isModifierKeyEvent(event: KeyboardEvent): boolean {
-        const keyMap: Record<ModifierKeyType, string> = {
-            meta: 'Meta',
-            ctrl: 'Control',
-            alt: 'Alt',
-            shift: 'Shift',
-        };
-        return event.key === keyMap[this.settings.modifierKey];
+        const keys = this.settings.modifierKeys;
+        // Return true if any required modifier key is pressed or released
+        if (keys.meta && event.key === 'Meta') return true;
+        if (keys.ctrl && event.key === 'Control') return true;
+        if (keys.alt && event.key === 'Alt') return true;
+        if (keys.shift && event.key === 'Shift') return true;
+        return false;
+    }
+
+    private areAllModifiersPressed(): boolean {
+        const keys = this.settings.modifierKeys;
+        // Check if ALL required modifiers are currently pressed (using tracked state)
+        if (keys.meta && !this.modifierState.meta) return false;
+        if (keys.ctrl && !this.modifierState.ctrl) return false;
+        if (keys.alt && !this.modifierState.alt) return false;
+        if (keys.shift && !this.modifierState.shift) return false;
+        // At least one modifier must be required
+        return keys.meta || keys.ctrl || keys.alt || keys.shift;
     }
 
     private handleModifierKeyDown() {
         // If already showing a preview, do nothing
         if (this.activePreview) return;
+
+        // Check if ALL required modifiers are now pressed
+        if (!this.areAllModifiersPressed()) return;
 
         // Find element under cursor
         const elementUnderCursor = document.elementFromPoint(this.lastMouseX, this.lastMouseY);
@@ -273,26 +358,51 @@ export default class LinkPreviewPlugin extends Plugin {
                 window.clearTimeout(this.hoverTimeout);
             }
             this.hoverTimeout = window.setTimeout(() => {
-                this.showPreview(linkInfo.element, linkInfo.url);
+                this.tryShowPreview(linkInfo.element, linkInfo.url);
             }, this.settings.hoverDelay);
         }
     }
 
     private handleModifierKeyUp() {
-        if (this.settings.closeOnModifierRelease) {
+        // Close preview when any required modifier key is released
+        if (this.settings.closeOnModifierRelease && !this.areAllModifiersPressed()) {
             this.cleanupActivePreview();
         }
     }
 
     async loadSettings() {
-        const platformDefault: ModifierKeyType = Platform.isMacOS ? 'meta' : 'ctrl';
-        const loaded = await this.loadData();
-        this.settings = Object.assign(
-            {},
-            DEFAULT_SETTINGS,
-            { modifierKey: platformDefault },
-            loaded
-        );
+        const loaded = (await this.loadData()) as (Partial<LinkPreviewSettings> & LegacyLinkPreviewSettings) | null;
+
+        // Create platform-aware default modifier keys
+        const platformDefaultKeys: ModifierKeyConfig = {
+            ...DEFAULT_MODIFIER_KEYS,
+            [Platform.isMacOS ? 'meta' : 'ctrl']: true,
+        };
+
+        let modifierKeys: ModifierKeyConfig;
+
+        if (loaded?.modifierKeys) {
+            // New format exists, use it
+            modifierKeys = loaded.modifierKeys;
+        } else if (loaded?.modifierKey) {
+            // Migrate from old single key format
+            modifierKeys = { ...DEFAULT_MODIFIER_KEYS, [loaded.modifierKey]: true };
+        } else {
+            // Fresh install, use platform default
+            modifierKeys = platformDefaultKeys;
+        }
+
+        this.settings = {
+            ...DEFAULT_SETTINGS,
+            ...loaded,
+            modifierKeys,
+        };
+
+        // Clean up legacy field if present
+        if ('modifierKey' in this.settings) {
+            delete (this.settings as LinkPreviewSettings & LegacyLinkPreviewSettings).modifierKey;
+            await this.saveSettings();
+        }
     }
 
     async saveSettings() {
@@ -513,24 +623,37 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     this.display();
                 }));
 
-        const modifierKeySetting = new Setting(containerEl)
-            .setName('Modifier key')
-            .setDesc('Which key to hold for showing previews')
-            .addDropdown(dropdown => {
-                dropdown
-                    .addOption('meta', Platform.isMacOS ? 'Command (⌘)' : 'Meta/Win')
-                    .addOption('ctrl', Platform.isMacOS ? 'Control (⌃)' : 'Ctrl')
-                    .addOption('alt', Platform.isMacOS ? 'Option (⌥)' : 'Alt')
-                    .addOption('shift', 'Shift')
-                    .setValue(this.plugin.settings.modifierKey)
-                    .onChange(async (value) => {
-                        this.plugin.settings.modifierKey = value as ModifierKeyType;
-                        await this.plugin.saveSettings();
-                    });
-                dropdown.setDisabled(!isModifierKeyEnabled);
-            });
-        if (!isModifierKeyEnabled) {
-            modifierKeySetting.settingEl.addClass('setting-disabled');
+        // Modifier key toggles
+        const modifierKeyNames: { key: keyof ModifierKeyConfig; label: string }[] = [
+            { key: 'meta', label: Platform.isMacOS ? 'Command (⌘)' : 'Meta/Win' },
+            { key: 'ctrl', label: Platform.isMacOS ? 'Control (⌃)' : 'Ctrl' },
+            { key: 'alt', label: Platform.isMacOS ? 'Option (⌥)' : 'Alt' },
+            { key: 'shift', label: 'Shift' },
+        ];
+
+        for (const { key, label } of modifierKeyNames) {
+            const setting = new Setting(containerEl)
+                .setName(label)
+                .setDesc(this.getModifierKeyDescription(key))
+                .addToggle(toggle => {
+                    toggle
+                        .setValue(this.plugin.settings.modifierKeys[key])
+                        .onChange(async (value) => {
+                            this.plugin.settings.modifierKeys[key] = value;
+                            // Ensure at least one modifier is selected when requireModifierKey is enabled
+                            if (this.plugin.settings.requireModifierKey && !this.hasAnyModifierSelected()) {
+                                // Reset to platform default
+                                const defaultKey = Platform.isMacOS ? 'meta' : 'ctrl';
+                                this.plugin.settings.modifierKeys[defaultKey] = true;
+                            }
+                            await this.plugin.saveSettings();
+                            this.display();
+                        });
+                    toggle.setDisabled(!isModifierKeyEnabled);
+                });
+            if (!isModifierKeyEnabled) {
+                setting.settingEl.addClass('setting-disabled');
+            }
         }
 
         const closeOnReleaseSetting = new Setting(containerEl)
@@ -564,6 +687,20 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
+            .setName('Mouse stillness delay')
+            .setDesc('Time in ms the mouse must be stationary before showing preview (0 = disabled)')
+            .addText(text => text
+                .setPlaceholder('0')
+                .setValue(String(this.plugin.settings.mouseStillnessDelay))
+                .onChange(async (value) => {
+                    const numValue = Number(value);
+                    if (!isNaN(numValue) && numValue >= 0) {
+                        this.plugin.settings.mouseStillnessDelay = numValue;
+                        await this.plugin.saveSettings();
+                    }
+                }));
+
+        new Setting(containerEl)
             .setName('Maximum height')
             .setDesc('Maximum height of preview window (in px)')
             .addText(text => text
@@ -584,5 +721,20 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     this.plugin.settings.maxPreviewWidth = Number(value);
                     await this.plugin.saveSettings();
                 }));
+    }
+
+    private hasAnyModifierSelected(): boolean {
+        const keys = this.plugin.settings.modifierKeys;
+        return keys.meta || keys.ctrl || keys.alt || keys.shift;
+    }
+
+    private getModifierKeyDescription(key: keyof ModifierKeyConfig): string {
+        const descriptions: Record<keyof ModifierKeyConfig, string> = {
+            meta: Platform.isMacOS ? 'Require Command key' : 'Require Meta/Windows key',
+            ctrl: Platform.isMacOS ? 'Require Control key' : 'Require Ctrl key',
+            alt: Platform.isMacOS ? 'Require Option key' : 'Require Alt key',
+            shift: 'Require Shift key',
+        };
+        return descriptions[key];
     }
 }
