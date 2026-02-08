@@ -94,6 +94,12 @@
     to { transform: rotate(360deg); }
 }
 
+/* Settings tab - remove extra bottom spacing from setting groups */
+.settings-group-no-margin {
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
 /* Settings tab - disabled state */
 .setting-disabled {
     opacity: 0.5;

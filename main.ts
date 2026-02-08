@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, MarkdownView, Platform } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, SettingGroup, MarkdownView, Platform } from 'obsidian';
 
 type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
 
@@ -665,106 +665,133 @@ class LinkPreviewSettingTab extends PluginSettingTab {
             { key: 'shift', label: 'Shift' },
         ];
 
+        const modifierGroup = new SettingGroup(containerEl)
+            .setHeading('Modifier keys')
+            .addClass('settings-group-no-margin');
+
+        if (!isModifierKeyEnabled) {
+            modifierGroup.addClass('setting-disabled');
+        }
+
         for (const { key, label } of modifierKeyNames) {
-            const setting = new Setting(containerEl)
-                .setName(label)
-                .setDesc(this.getModifierKeyDescription(key))
+            modifierGroup.addSetting(setting => {
+                setting
+                    .setName(label)
+                    .setDesc(this.getModifierKeyDescription(key))
+                    .addToggle(toggle => {
+                        toggle
+                            .setValue(this.plugin.settings.modifierKeys[key])
+                            .onChange(async (value) => {
+                                this.plugin.settings.modifierKeys[key] = value;
+                                // Ensure at least one modifier is selected when requireModifierKey is enabled
+                                if (this.plugin.settings.requireModifierKey && !this.hasAnyModifierSelected()) {
+                                    // Reset to platform default
+                                    const defaultKey = Platform.isMacOS ? 'meta' : 'ctrl';
+                                    this.plugin.settings.modifierKeys[defaultKey] = true;
+                                }
+                                await this.plugin.saveSettings();
+                                this.display();
+                            });
+                        toggle.setDisabled(!isModifierKeyEnabled);
+                    });
+            });
+        }
+
+        const behaviorGroup = new SettingGroup(containerEl)
+            .setHeading('Behavior')
+            .addClass('settings-group-no-margin');
+
+        behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Close on key release')
+                .setDesc('Close preview when modifier key is released')
                 .addToggle(toggle => {
                     toggle
-                        .setValue(this.plugin.settings.modifierKeys[key])
+                        .setValue(this.plugin.settings.closeOnModifierRelease)
                         .onChange(async (value) => {
-                            this.plugin.settings.modifierKeys[key] = value;
-                            // Ensure at least one modifier is selected when requireModifierKey is enabled
-                            if (this.plugin.settings.requireModifierKey && !this.hasAnyModifierSelected()) {
-                                // Reset to platform default
-                                const defaultKey = Platform.isMacOS ? 'meta' : 'ctrl';
-                                this.plugin.settings.modifierKeys[defaultKey] = true;
-                            }
+                            this.plugin.settings.closeOnModifierRelease = value;
                             await this.plugin.saveSettings();
-                            this.display();
                         });
                     toggle.setDisabled(!isModifierKeyEnabled);
                 });
             if (!isModifierKeyEnabled) {
                 setting.settingEl.addClass('setting-disabled');
             }
-        }
+        });
 
-        const closeOnReleaseSetting = new Setting(containerEl)
-            .setName('Close on key release')
-            .setDesc('Close preview when modifier key is released')
-            .addToggle(toggle => {
-                toggle
-                    .setValue(this.plugin.settings.closeOnModifierRelease)
+        behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Sticky popup')
+                .setDesc('Keep popup open until ESC or click outside (instead of closing when mouse leaves)')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.stickyPopup)
                     .onChange(async (value) => {
-                        this.plugin.settings.closeOnModifierRelease = value;
+                        this.plugin.settings.stickyPopup = value;
                         await this.plugin.saveSettings();
-                    });
-                toggle.setDisabled(!isModifierKeyEnabled);
+                    }));
+        });
+
+        new SettingGroup(containerEl)
+            .setHeading('Mouse settings')
+            .addClass('settings-group-no-margin')
+            .addSetting(setting => {
+                setting
+                    .setName('Hover delay')
+                    .setDesc('Delay before showing preview (in ms)')
+                    .addText(text => text
+                        .setPlaceholder('500')
+                        .setValue(String(this.plugin.settings.hoverDelay))
+                        .onChange(async (value) => {
+                            const numValue = Number(value);
+                            if (!isNaN(numValue) && numValue >= 0) {
+                                this.plugin.settings.hoverDelay = numValue;
+                                await this.plugin.saveSettings();
+                            }
+                        }));
+            })
+            .addSetting(setting => {
+                setting
+                    .setName('Mouse stillness delay')
+                    .setDesc('Time in ms the mouse must be stationary before showing preview (0 = disabled)')
+                    .addText(text => text
+                        .setPlaceholder('0')
+                        .setValue(String(this.plugin.settings.mouseStillnessDelay))
+                        .onChange(async (value) => {
+                            const numValue = Number(value);
+                            if (!isNaN(numValue) && numValue >= 0) {
+                                this.plugin.settings.mouseStillnessDelay = numValue;
+                                await this.plugin.saveSettings();
+                            }
+                        }));
             });
-        if (!isModifierKeyEnabled) {
-            closeOnReleaseSetting.settingEl.addClass('setting-disabled');
-        }
 
-        new Setting(containerEl)
-            .setName('Sticky popup')
-            .setDesc('Keep popup open until ESC or click outside (instead of closing when mouse leaves)')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.stickyPopup)
-                .onChange(async (value) => {
-                    this.plugin.settings.stickyPopup = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('Hover delay')
-            .setDesc('Delay before showing preview (in ms)')
-            .addText(text => text
-                .setPlaceholder('500')
-                .setValue(String(this.plugin.settings.hoverDelay))
-                .onChange(async (value) => {
-                    const numValue = Number(value);
-                    if (!isNaN(numValue) && numValue >= 0) {
-                        this.plugin.settings.hoverDelay = numValue;
-                        await this.plugin.saveSettings();
-                    }
-                }));
-
-        new Setting(containerEl)
-            .setName('Mouse stillness delay')
-            .setDesc('Time in ms the mouse must be stationary before showing preview (0 = disabled)')
-            .addText(text => text
-                .setPlaceholder('0')
-                .setValue(String(this.plugin.settings.mouseStillnessDelay))
-                .onChange(async (value) => {
-                    const numValue = Number(value);
-                    if (!isNaN(numValue) && numValue >= 0) {
-                        this.plugin.settings.mouseStillnessDelay = numValue;
-                        await this.plugin.saveSettings();
-                    }
-                }));
-
-        new Setting(containerEl)
-            .setName('Maximum height')
-            .setDesc('Maximum height of preview window (in px)')
-            .addText(text => text
-                .setPlaceholder('300')
-                .setValue(String(this.plugin.settings.maxPreviewHeight))
-                .onChange(async (value) => {
-                    this.plugin.settings.maxPreviewHeight = Number(value);
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('Maximum width')
-            .setDesc('Maximum width of preview window (in px)')
-            .addText(text => text
-                .setPlaceholder('400')
-                .setValue(String(this.plugin.settings.maxPreviewWidth))
-                .onChange(async (value) => {
-                    this.plugin.settings.maxPreviewWidth = Number(value);
-                    await this.plugin.saveSettings();
-                }));
+        new SettingGroup(containerEl)
+            .setHeading('Preview size')
+            .addClass('settings-group-no-margin')
+            .addSetting(setting => {
+                setting
+                    .setName('Maximum height')
+                    .setDesc('Maximum height of preview window (in px)')
+                    .addText(text => text
+                        .setPlaceholder('300')
+                        .setValue(String(this.plugin.settings.maxPreviewHeight))
+                        .onChange(async (value) => {
+                            this.plugin.settings.maxPreviewHeight = Number(value);
+                            await this.plugin.saveSettings();
+                        }));
+            })
+            .addSetting(setting => {
+                setting
+                    .setName('Maximum width')
+                    .setDesc('Maximum width of preview window (in px)')
+                    .addText(text => text
+                        .setPlaceholder('400')
+                        .setValue(String(this.plugin.settings.maxPreviewWidth))
+                        .onChange(async (value) => {
+                            this.plugin.settings.maxPreviewWidth = Number(value);
+                            await this.plugin.saveSettings();
+                        }));
+            });
     }
 
     private hasAnyModifierSelected(): boolean {
