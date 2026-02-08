@@ -17,6 +17,7 @@ interface LinkPreviewSettings {
     modifierKeys: ModifierKeyConfig;
     closeOnModifierRelease: boolean;
     mouseStillnessDelay: number;
+    stickyPopup: boolean;
 }
 
 // Legacy settings interface for migration
@@ -38,6 +39,7 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys'>> = {
     requireModifierKey: true,
     closeOnModifierRelease: true,
     mouseStillnessDelay: 0,
+    stickyPopup: false,
     // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
@@ -166,6 +168,12 @@ export default class LinkPreviewPlugin extends Plugin {
 
         // Add mouse leave listener to target
         const handleMouseLeave = (e: MouseEvent) => {
+            // Skip cleanup timer if sticky popup is enabled
+            if (this.settings.stickyPopup) {
+                linkElement.removeEventListener('mouseleave', handleMouseLeave);
+                return;
+            }
+
             // Check if mouse moved to the preview
             const toElement = e.relatedTarget as HTMLElement | null;
             if (toElement && this.activePreview?.element.contains(toElement)) return;
@@ -241,11 +249,37 @@ export default class LinkPreviewPlugin extends Plugin {
         });
 
         previewEl.addEventListener('mouseleave', () => {
-            this.startCleanupTimer();
+            if (!this.settings.stickyPopup) {
+                this.startCleanupTimer();
+            }
         });
 
+        // Add click-outside handler for sticky popup mode
+        let clickOutsideHandler: ((e: MouseEvent) => void) | undefined;
+        if (this.settings.stickyPopup) {
+            clickOutsideHandler = (e: MouseEvent) => {
+                const target = e.target as Element;
+                if (!previewEl.contains(target) && !link.contains(target)) {
+                    this.cleanupActivePreview();
+                }
+            };
+            // Delay adding listener to avoid immediate trigger from the click that might have opened it
+            setTimeout(() => {
+                document.addEventListener('click', clickOutsideHandler!);
+            }, 0);
+        }
+
+        // Update cleanup to remove click handler
+        const originalCleanup = cleanup;
+        const cleanupWithClickHandler = () => {
+            if (clickOutsideHandler) {
+                document.removeEventListener('click', clickOutsideHandler);
+            }
+            originalCleanup();
+        };
+
         document.body.appendChild(previewEl);
-        this.activePreview = { element: previewEl, cleanup, link };
+        this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, link };
     }
 
     private cleanupTimeout?: number;
@@ -364,8 +398,8 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private handleModifierKeyUp() {
-        // Close preview when any required modifier key is released
-        if (this.settings.closeOnModifierRelease && !this.areAllModifiersPressed()) {
+        // Close preview when any required modifier key is released (unless sticky popup is enabled)
+        if (this.settings.closeOnModifierRelease && !this.settings.stickyPopup && !this.areAllModifiersPressed()) {
             this.cleanupActivePreview();
         }
     }
@@ -671,6 +705,16 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         if (!isModifierKeyEnabled) {
             closeOnReleaseSetting.settingEl.addClass('setting-disabled');
         }
+
+        new Setting(containerEl)
+            .setName('Sticky popup')
+            .setDesc('Keep popup open until ESC or click outside (instead of closing when mouse leaves)')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.stickyPopup)
+                .onChange(async (value) => {
+                    this.plugin.settings.stickyPopup = value;
+                    await this.plugin.saveSettings();
+                }));
 
         new Setting(containerEl)
             .setName('Hover delay')
