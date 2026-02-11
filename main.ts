@@ -722,7 +722,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         behaviorGroup.addSetting(setting => {
             setting
                 .setName('Sticky popup')
-                .setDesc('Keep popup open until ESC or click outside (instead of closing when mouse leaves)')
+                .setDesc('Keep popup open until Esc or click outside (instead of closing when mouse leaves)')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.stickyPopup)
                     .onChange(async (value) => {
