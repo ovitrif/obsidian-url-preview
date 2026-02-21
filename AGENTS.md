@@ -80,6 +80,8 @@ Uses `Platform.isMacOS` to determine modifier key (Meta vs Control) for editor m
 ## Rules
 
 - ALWAYS build after changes
+- ALWAYS copy built files to the vault after building: `cp main.js manifest.json styles.css ~/vault/.obsidian/plugins/url-preview/`
+- NEVER use direct style manipulation (`element.style.*`, `style.cssText`). Use CSS classes, `setCssStyles()`, or `setCssProps()` instead.
 
 ## Obsidian Plugin Guidelines
 
@@ -87,11 +89,13 @@ This plugin must pass ObsidianBot automated review. Follow these rules to avoid 
 
 ### Required (will block PR approval)
 
-1. **No direct style manipulation** - Use CSS classes instead
+1. **No direct style manipulation** - Use CSS classes or Obsidian's style APIs
    - ❌ `element.style.visibility = 'visible'`
    - ❌ `element.style.opacity = '0.5'`
-   - ✅ `element.addClass('is-visible')`
-   - Define styles in `styles.css`, toggle via `addClass()`/`removeClass()`
+   - ❌ `element.style.cssText = '...'`
+   - ✅ `element.addClass('is-visible')` — for toggling states (define in `styles.css`)
+   - ✅ `element.setCssStyles({ left: '10px' })` — for dynamic/computed values
+   - ✅ `element.setCssProps({ '--my-var': '10px' })` — for CSS custom properties
 
 2. **No unnecessary type assertions**
    - ❌ `element.querySelector('a') as HTMLAnchorElement`

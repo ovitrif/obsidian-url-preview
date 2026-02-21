@@ -457,13 +457,12 @@ export default class LinkPreviewPlugin extends Plugin {
         
         const bounds = this.calculatePreviewBounds(rect, windowSize);
         
-        // Set positioning directly - remove CSS variables approach
-        el.style.cssText = `
-            left: ${bounds.left}px;
-            top: ${bounds.top}px;
-            width: ${bounds.width}px;
-            height: ${bounds.height}px;
-        `;
+        el.setCssStyles({
+            left: `${bounds.left}px`,
+            top: `${bounds.top}px`,
+            width: `${bounds.width}px`,
+            height: `${bounds.height}px`,
+        });
         
         return el;
     }
