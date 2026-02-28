@@ -1,7 +1,7 @@
 {
 	"id": "url-preview",
 	"name": "URL Preview",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"minAppVersion": "1.11.0",
 	"description": "Preview external URLs on hover. Works in Editor, Live Preview, and Reader modes.",
 	"author": "ovitrif",

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-28
+
+### Added
+
+- Floating "Open in browser" and "Close" buttons on the preview popup
+- New setting: "Show open in browser button"
+- New setting: "Show close button"
+- Subtle border on preview popup for better visibility against matching backgrounds
+
+### Fixed
+
+- Wrong preview shown when links share common text in editor mode (e.g., "Obsidian" vs "Obsidian Docs")
+
 ## [0.2.1] - 2026-02-08
 
 ### Added

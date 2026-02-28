@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, SettingGroup, MarkdownView, Platform } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, SettingGroup, MarkdownView, Platform, setIcon, setTooltip } from 'obsidian';
 
 type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
 
@@ -18,6 +18,8 @@ interface LinkPreviewSettings {
     closeOnModifierRelease: boolean;
     mouseStillnessDelay: number;
     stickyPopup: boolean;
+    showOpenInBrowser: boolean;
+    showCloseButton: boolean;
 }
 
 // Legacy settings interface for migration
@@ -40,6 +42,8 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys'>> = {
     closeOnModifierRelease: true,
     mouseStillnessDelay: 0,
     stickyPopup: false,
+    showOpenInBrowser: true,
+    showCloseButton: true,
     // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
@@ -204,6 +208,10 @@ export default class LinkPreviewPlugin extends Plugin {
     private showPreview(link: HTMLElement, url: string) {
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect);
+
+        if (this.settings.showOpenInBrowser || this.settings.showCloseButton) {
+            this.createButtons(previewEl, url);
+        }
 
         const wrapper = previewEl.createDiv('preview-iframe-wrapper');
 
@@ -467,6 +475,30 @@ export default class LinkPreviewPlugin extends Plugin {
         return el;
     }
 
+    private createButtons(container: HTMLElement, url: string) {
+        const buttons = container.createDiv('preview-buttons');
+
+        if (this.settings.showOpenInBrowser) {
+            const openBtn = buttons.createEl('button', { cls: 'clickable-icon' });
+            setIcon(openBtn, 'external-link');
+            setTooltip(openBtn, 'Open in external browser');
+            openBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                window.open(url);
+            });
+        }
+
+        if (this.settings.showCloseButton) {
+            const closeBtn = buttons.createEl('button', { cls: 'clickable-icon' });
+            setIcon(closeBtn, 'x');
+            setTooltip(closeBtn, 'Close preview');
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.cleanupActivePreview();
+            });
+        }
+    }
+
     private calculatePreviewBounds(rect: DOMRect, windowSize: { width: number, height: number }): {
         left: number,
         top: number,
@@ -549,30 +581,36 @@ export default class LinkPreviewPlugin extends Plugin {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (!view?.editor) return null;
 
-        // Get the display text from the hovered element
         const displayText = element.textContent?.trim();
         if (!displayText) return null;
 
-        // Get the full document content
         const content = view.editor.getValue();
-
-        // Find all markdown links in the document: [text](url)
         const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
         let match;
+        let substringMatch: string | null = null;
 
         while ((match = linkRegex.exec(content)) !== null) {
             const linkText = match[1];
             const url = match[2];
 
-            // Check if the display text matches or contains/is contained in the link text
-            if (linkText === displayText ||
-                linkText.includes(displayText) ||
-                displayText.includes(linkText)) {
+            // Exact match — return immediately
+            if (linkText === displayText) {
                 return url;
+            }
+
+            // Substring match — remember first one, but keep looking for exact
+            if (!substringMatch &&
+                (linkText.includes(displayText) || displayText.includes(linkText))) {
+                substringMatch = url;
             }
         }
 
-        // Also try to find bare URLs if the displayText looks like a URL
+        // No exact match found — use substring match if any
+        if (substringMatch) {
+            return substringMatch;
+        }
+
+        // Bare URL fallback
         if (displayText.startsWith('http')) {
             return this.normalizeUrl(displayText);
         }
@@ -726,6 +764,30 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     .setValue(this.plugin.settings.stickyPopup)
                     .onChange(async (value) => {
                         this.plugin.settings.stickyPopup = value;
+                        await this.plugin.saveSettings();
+                    }));
+        });
+
+        behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Show open in browser button')
+                .setDesc('Show a button to open the URL in the default browser')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showOpenInBrowser)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showOpenInBrowser = value;
+                        await this.plugin.saveSettings();
+                    }));
+        });
+
+        behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Show close button')
+                .setDesc('Show a button to close the preview popup')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showCloseButton)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showCloseButton = value;
                         await this.plugin.saveSettings();
                     }));
         });
