@@ -11,3 +11,6 @@ data.json
 # Don't include the compiled main.js file in the repo.
 # It should be uploaded to GitHub releases instead.
 main.js
+
+# Dev symlink to vault plugin directory (for hot-reload)
+dist

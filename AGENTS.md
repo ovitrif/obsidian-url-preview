@@ -10,11 +10,14 @@ This is an Obsidian plugin ("URL Preview") that displays a website preview when 
 
 ```bash
 npm run dev      # Start development mode with watch (uses esbuild)
-npm run build    # Production build (runs tsc type-check then esbuild)
+npm run build    # Production build (lint + tsc type-check + esbuild)
+npm run lint     # Run ESLint with eslint-plugin-obsidianmd (zero warnings allowed)
+npm run lint:fix # Run ESLint with auto-fix
 npm run version  # Updates the version in manifest.json and versions.json (requires git)
 ```
 
-The build outputs `main.js` to the project root. For local development, copy `main.js`, `manifest.json`, and `styles.css` to your Obsidian vault's `.obsidian/plugins/url-preview/` directory.
+- **Dev mode** (`npm run dev`): Outputs to `dist/` which is symlinked to the vault's plugin directory. The [hot-reload](https://github.com/pjeby/hot-reload) plugin picks up changes automatically — no manual copy needed.
+- **Prod mode** (`npm run build`): Outputs `main.js` to the project root for releases.
 
 ## Architecture
 
@@ -80,7 +83,8 @@ Uses `Platform.isMacOS` to determine modifier key (Meta vs Control) for editor m
 ## Rules
 
 - ALWAYS build after changes
-- ALWAYS copy built files to the vault after building: `cp main.js manifest.json styles.css ~/vault/.obsidian/plugins/url-preview/`
+- ALWAYS lint before pushing (`npm run lint`). The `build` script includes linting automatically.
+- In dev mode, the `dist/` symlink handles deployment to the vault automatically. For production/release builds, copy built files manually: `cp main.js manifest.json styles.css "$VAULT/.obsidian/plugins/url-preview/"`
 - NEVER use direct style manipulation (`element.style.*`, `style.cssText`). Use CSS classes, `setCssStyles()`, or `setCssProps()` instead.
 
 ## Obsidian Plugin Guidelines
@@ -114,7 +118,7 @@ This plugin must pass ObsidianBot automated review. Follow these rules to avoid 
 
 ### References
 
-- [Obsidian ESLint Plugin](https://github.com/obsidianmd/eslint-plugin)
+- [Obsidian ESLint Plugin](https://github.com/obsidianmd/eslint-plugin) — installed locally as `eslint-plugin-obsidianmd`
 - [Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)
 - [PR Review History](https://github.com/obsidianmd/obsidian-releases/pull/9474)
 

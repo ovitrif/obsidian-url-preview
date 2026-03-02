@@ -74,7 +74,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private registerGlobalHandler() {
         const handleWindow = (doc: Document) => {
-            this.registerDomEvent(doc, 'mouseover', this.handleLinkHover.bind(this));
+            this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => this.handleLinkHover(e));
             this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
                 // Track mouse stillness - only update time if mouse moved significantly (>2px)
                 const dx = Math.abs(e.clientX - this.lastMouseX);
@@ -759,7 +759,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         behaviorGroup.addSetting(setting => {
             setting
                 .setName('Sticky popup')
-                .setDesc('Keep popup open until Esc or click outside (instead of closing when mouse leaves)')
+                .setDesc('Keep popup open until escape or click outside (instead of closing when mouse leaves)')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.stickyPopup)
                     .onChange(async (value) => {

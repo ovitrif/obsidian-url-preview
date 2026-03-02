@@ -1,6 +1,7 @@
+import { builtinModules } from "node:module";
+import { copyFileSync } from "node:fs";
 import esbuild from "esbuild";
-import process from "process";
-import builtins from "builtin-modules";
+import process from "node:process";
 
 const banner =
 `/*
@@ -10,6 +11,17 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === "production");
+const outfile = prod ? "main.js" : "dist/main.js";
+
+const copyPlugin = {
+	name: "copy-to-dist",
+	setup(build) {
+		build.onEnd(() => {
+			copyFileSync("manifest.json", "dist/manifest.json");
+			copyFileSync("styles.css", "dist/styles.css");
+		});
+	},
+};
 
 const context = await esbuild.context({
 	banner: {
@@ -31,13 +43,14 @@ const context = await esbuild.context({
 		"@lezer/common",
 		"@lezer/highlight",
 		"@lezer/lr",
-		...builtins],
+		...builtinModules],
 	format: "cjs",
 	target: "es2018",
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "main.js",
+	outfile,
+	plugins: prod ? [] : [copyPlugin],
 	minify: prod,
 });
 
