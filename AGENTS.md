@@ -177,3 +177,5 @@ git commit -m "Release X.Y.Z"
 git tag X.Y.Z
 git push && git push --tags
 ```
+
+Pushing the tag triggers the `.github/workflows/release.yml` workflow, which automatically builds the plugin and creates a GitHub release with `main.js`, `manifest.json`, and `styles.css` attached. No manual asset upload needed.
