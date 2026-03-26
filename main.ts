@@ -64,7 +64,7 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'per
     showOpenInBrowser: true,
     showCloseButton: true,
     allowResize: true,
-    persistResize: true,
+    persistResize: false,
     // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
