@@ -21,7 +21,7 @@
     right: 4px;
     display: flex;
     gap: 0;
-    z-index: 1;
+    z-index: 3;
     background: var(--background-primary);
     border: 1px solid var(--background-modifier-border);
     border-radius: var(--radius-m);
@@ -85,6 +85,113 @@
 @keyframes rotate {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+}
+
+/* Resize handles - base */
+.resize-handle {
+    position: absolute;
+    z-index: 2;
+    box-sizing: border-box;
+    border: 3px solid transparent;
+    transition: border-color 0.15s ease;
+}
+
+/* Edge handle positions */
+.resize-handle-n {
+    top: 0;
+    left: 12px;
+    right: 12px;
+    height: 6px;
+    cursor: ns-resize;
+}
+
+.resize-handle-s {
+    bottom: 0;
+    left: 12px;
+    right: 12px;
+    height: 6px;
+    cursor: ns-resize;
+}
+
+.resize-handle-w {
+    left: 0;
+    top: 12px;
+    bottom: 12px;
+    width: 6px;
+    cursor: ew-resize;
+}
+
+.resize-handle-e {
+    right: 0;
+    top: 12px;
+    bottom: 12px;
+    width: 6px;
+    cursor: ew-resize;
+}
+
+/* Corner handle positions */
+.resize-handle-nw {
+    top: 0;
+    left: 0;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+}
+
+.resize-handle-ne {
+    top: 0;
+    right: 0;
+    width: 12px;
+    height: 12px;
+    cursor: nesw-resize;
+}
+
+.resize-handle-sw {
+    bottom: 0;
+    left: 0;
+    width: 12px;
+    height: 12px;
+    cursor: nesw-resize;
+}
+
+.resize-handle-se {
+    bottom: 0;
+    right: 0;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+}
+
+/* Accent highlight on edge hover */
+.resize-handle-n:hover { border-top-color: var(--interactive-accent); }
+.resize-handle-s:hover { border-bottom-color: var(--interactive-accent); }
+.resize-handle-w:hover { border-left-color: var(--interactive-accent); }
+.resize-handle-e:hover { border-right-color: var(--interactive-accent); }
+
+/* Accent highlight on corner hover - L-shaped borders */
+.resize-handle-nw:hover { border-top-color: var(--interactive-accent); border-left-color: var(--interactive-accent); }
+.resize-handle-ne:hover { border-top-color: var(--interactive-accent); border-right-color: var(--interactive-accent); }
+.resize-handle-sw:hover { border-bottom-color: var(--interactive-accent); border-left-color: var(--interactive-accent); }
+.resize-handle-se:hover { border-bottom-color: var(--interactive-accent); border-right-color: var(--interactive-accent); }
+
+/* Disable iframe pointer events during resize */
+.hover-popup.is-resizing .preview-iframe-wrapper iframe {
+    pointer-events: none;
+}
+
+/* Live size indicator during resize */
+.resize-size-indicator {
+    position: fixed;
+    z-index: 1001;
+    padding: 2px 6px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-size: var(--font-smallest);
+    font-family: var(--font-monospace);
+    pointer-events: none;
+    white-space: nowrap;
 }
 
 /* Settings tab - remove extra bottom spacing from setting groups */

@@ -1,6 +1,21 @@
 import { App, Plugin, PluginSettingTab, Setting, SettingGroup, MarkdownView, Platform, setIcon, setTooltip } from 'obsidian';
 
 type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
+type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
+
+const MIN_PREVIEW_WIDTH = 200;
+const MIN_PREVIEW_HEIGHT = 150;
+
+const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
+    { direction: 'n', cls: 'resize-handle-n' },
+    { direction: 's', cls: 'resize-handle-s' },
+    { direction: 'w', cls: 'resize-handle-w' },
+    { direction: 'e', cls: 'resize-handle-e' },
+    { direction: 'nw', cls: 'resize-handle-nw' },
+    { direction: 'ne', cls: 'resize-handle-ne' },
+    { direction: 'sw', cls: 'resize-handle-sw' },
+    { direction: 'se', cls: 'resize-handle-se' },
+];
 
 interface ModifierKeyConfig {
     meta: boolean;
@@ -20,6 +35,10 @@ interface LinkPreviewSettings {
     stickyPopup: boolean;
     showOpenInBrowser: boolean;
     showCloseButton: boolean;
+    allowResize: boolean;
+    persistResize: boolean;
+    persistedWidth?: number;
+    persistedHeight?: number;
 }
 
 // Legacy settings interface for migration
@@ -34,7 +53,7 @@ const DEFAULT_MODIFIER_KEYS: ModifierKeyConfig = {
     shift: false,
 };
 
-const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys'>> = {
+const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'persistedWidth' | 'persistedHeight'>> = {
     maxPreviewHeight: 960,
     maxPreviewWidth: 720,
     hoverDelay: 500,
@@ -44,6 +63,8 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys'>> = {
     stickyPopup: false,
     showOpenInBrowser: true,
     showCloseButton: true,
+    allowResize: true,
+    persistResize: true,
     // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
@@ -60,6 +81,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private modifierState: ModifierKeyConfig = { meta: false, ctrl: false, alt: false, shift: false };
     private lastMovementTime = 0;
     private stillnessCheckTimeout?: number;
+    private activeResizeCleanup?: () => void;
 
     async onload() {
         await this.loadSettings();
@@ -286,6 +308,10 @@ export default class LinkPreviewPlugin extends Plugin {
             originalCleanup();
         };
 
+        if (this.settings.allowResize) {
+            this.createResizeHandles(previewEl);
+        }
+
         document.body.appendChild(previewEl);
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, link };
     }
@@ -293,6 +319,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private cleanupTimeout?: number;
 
     private startCleanupTimer() {
+        if (this.activeResizeCleanup) return;
         if (this.cleanupTimeout) {
             window.clearTimeout(this.cleanupTimeout);
         }
@@ -332,6 +359,10 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private cleanupActivePreview() {
+        if (this.activeResizeCleanup) {
+            this.activeResizeCleanup();
+            this.activeResizeCleanup = undefined;
+        }
         if (this.activePreview) {
             this.activePreview.cleanup();
             this.activePreview = undefined;
@@ -499,6 +530,107 @@ export default class LinkPreviewPlugin extends Plugin {
         }
     }
 
+    private createResizeHandles(previewEl: HTMLElement) {
+        for (const { direction, cls } of RESIZE_HANDLES) {
+            const handle = previewEl.createDiv(`resize-handle ${cls}`);
+            handle.addEventListener('mousedown', (e) => this.startResize(e, previewEl, direction));
+        }
+    }
+
+    private startResize(e: MouseEvent, previewEl: HTMLElement, direction: ResizeDirection) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        previewEl.addClass('is-resizing');
+
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const initialRect = previewEl.getBoundingClientRect();
+
+        const indicator = createEl('div', { cls: 'resize-size-indicator' });
+        indicator.textContent = `${Math.round(initialRect.width)}\u00d7${Math.round(initialRect.height)}`;
+        indicator.setCssStyles({
+            left: `${e.clientX + 12}px`,
+            top: `${e.clientY + 12}px`,
+        });
+        document.body.appendChild(indicator);
+
+        const margin = 5;
+
+        const onMouseMove = (moveEvent: MouseEvent) => {
+            const dx = moveEvent.clientX - startX;
+            const dy = moveEvent.clientY - startY;
+
+            let newLeft = initialRect.left;
+            let newTop = initialRect.top;
+            let newWidth = initialRect.width;
+            let newHeight = initialRect.height;
+
+            if (direction.includes('e')) newWidth += dx;
+            if (direction.includes('w')) { newWidth -= dx; newLeft += dx; }
+            if (direction.includes('s')) newHeight += dy;
+            if (direction.includes('n')) { newHeight -= dy; newTop += dy; }
+
+            // Enforce minimum size
+            if (newWidth < MIN_PREVIEW_WIDTH) {
+                if (direction.includes('w')) newLeft = initialRect.right - MIN_PREVIEW_WIDTH;
+                newWidth = MIN_PREVIEW_WIDTH;
+            }
+            if (newHeight < MIN_PREVIEW_HEIGHT) {
+                if (direction.includes('n')) newTop = initialRect.bottom - MIN_PREVIEW_HEIGHT;
+                newHeight = MIN_PREVIEW_HEIGHT;
+            }
+
+            // Clamp to viewport
+            newLeft = Math.max(margin, newLeft);
+            newTop = Math.max(margin, newTop);
+            if (newLeft + newWidth > window.innerWidth - margin) {
+                newWidth = window.innerWidth - margin - newLeft;
+            }
+            if (newTop + newHeight > window.innerHeight - margin) {
+                newHeight = window.innerHeight - margin - newTop;
+            }
+
+            previewEl.setCssStyles({
+                left: `${newLeft}px`,
+                top: `${newTop}px`,
+                width: `${newWidth}px`,
+                height: `${newHeight}px`,
+            });
+
+            indicator.textContent = `${Math.round(newWidth)}\u00d7${Math.round(newHeight)}`;
+            indicator.setCssStyles({
+                left: `${moveEvent.clientX + 12}px`,
+                top: `${moveEvent.clientY + 12}px`,
+            });
+        };
+
+        const onMouseUp = () => {
+            previewEl.removeClass('is-resizing');
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            indicator.remove();
+            this.activeResizeCleanup = undefined;
+
+            if (this.settings.persistResize) {
+                const finalRect = previewEl.getBoundingClientRect();
+                this.settings.persistedWidth = Math.round(finalRect.width);
+                this.settings.persistedHeight = Math.round(finalRect.height);
+                void this.saveSettings();
+            }
+        };
+
+        this.activeResizeCleanup = () => {
+            previewEl.removeClass('is-resizing');
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            indicator.remove();
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    }
+
     private calculatePreviewBounds(rect: DOMRect, windowSize: { width: number, height: number }): {
         left: number,
         top: number,
@@ -507,8 +639,12 @@ export default class LinkPreviewPlugin extends Plugin {
         showAbove: boolean
     } {
         const margin = 5; // Margin from edges
-        const maxWidth = Math.min(this.settings.maxPreviewWidth, windowSize.width - margin * 2);
-        const maxHeight = Math.min(this.settings.maxPreviewHeight, windowSize.height - margin * 2);
+        const targetWidth = (this.settings.persistResize && this.settings.persistedWidth)
+            ? this.settings.persistedWidth : this.settings.maxPreviewWidth;
+        const targetHeight = (this.settings.persistResize && this.settings.persistedHeight)
+            ? this.settings.persistedHeight : this.settings.maxPreviewHeight;
+        const maxWidth = Math.min(targetWidth, windowSize.width - margin * 2);
+        const maxHeight = Math.min(targetHeight, windowSize.height - margin * 2);
         
         // Determine if we should show above or below
         const spaceBelow = windowSize.height - rect.bottom - margin;
@@ -838,6 +974,8 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setValue(String(this.plugin.settings.maxPreviewHeight))
                         .onChange(async (value) => {
                             this.plugin.settings.maxPreviewHeight = Number(value);
+                            this.plugin.settings.persistedWidth = undefined;
+                            this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();
                         }));
             })
@@ -850,9 +988,52 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setValue(String(this.plugin.settings.maxPreviewWidth))
                         .onChange(async (value) => {
                             this.plugin.settings.maxPreviewWidth = Number(value);
+                            this.plugin.settings.persistedWidth = undefined;
+                            this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();
                         }));
             });
+
+        const isResizeEnabled = this.plugin.settings.allowResize;
+
+        const resizeGroup = new SettingGroup(containerEl)
+            .setHeading('Resize')
+            .addClass('settings-group-no-margin');
+
+        resizeGroup.addSetting(setting => {
+            setting
+                .setName('Allow resize')
+                .setDesc('Drag the edges or corners of the preview to resize it')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.allowResize)
+                    .onChange(async (value) => {
+                        this.plugin.settings.allowResize = value;
+                        await this.plugin.saveSettings();
+                        this.display();
+                    }));
+        });
+
+        resizeGroup.addSetting(setting => {
+            setting
+                .setName('Persist resize')
+                .setDesc('Remember resized dimensions for future previews')
+                .addToggle(toggle => {
+                    toggle
+                        .setValue(this.plugin.settings.persistResize)
+                        .onChange(async (value) => {
+                            this.plugin.settings.persistResize = value;
+                            if (!value) {
+                                this.plugin.settings.persistedWidth = undefined;
+                                this.plugin.settings.persistedHeight = undefined;
+                            }
+                            await this.plugin.saveSettings();
+                        });
+                    toggle.setDisabled(!isResizeEnabled);
+                });
+            if (!isResizeEnabled) {
+                setting.settingEl.addClass('setting-disabled');
+            }
+        });
     }
 
     private hasAnyModifierSelected(): boolean {
