@@ -87,92 +87,47 @@
     to { transform: rotate(360deg); }
 }
 
-/* Resize handles - base */
+/* Resize handles — invisible hit targets for drag interaction */
 .resize-handle {
     position: absolute;
     z-index: 2;
-    box-sizing: border-box;
+}
+
+/* Edge handles — span full length */
+.resize-handle-n { top: 0; left: 0; right: 0; height: 8px; cursor: ns-resize; }
+.resize-handle-s { bottom: 0; left: 0; right: 0; height: 8px; cursor: ns-resize; }
+.resize-handle-w { left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+.resize-handle-e { right: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+
+/* Corner handles — sit above edges for diagonal cursor */
+.resize-handle-nw { top: 0; left: 0; width: 16px; height: 16px; z-index: 3; cursor: nwse-resize; }
+.resize-handle-ne { top: 0; right: 0; width: 16px; height: 16px; z-index: 3; cursor: nesw-resize; }
+.resize-handle-sw { bottom: 0; left: 0; width: 16px; height: 16px; z-index: 3; cursor: nesw-resize; }
+.resize-handle-se { bottom: 0; right: 0; width: 16px; height: 16px; z-index: 3; cursor: nwse-resize; }
+
+/* Accent border highlight — pseudo-element on the popup, inherits border-radius */
+.hover-popup::after {
+    content: '';
+    position: absolute;
+    inset: 0;
     border: 3px solid transparent;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 4;
     transition: border-color 0.15s ease;
 }
 
-/* Edge handle positions */
-.resize-handle-n {
-    top: 0;
-    left: 12px;
-    right: 12px;
-    height: 6px;
-    cursor: ns-resize;
-}
+/* Edge hover highlights */
+.hover-popup:has(.resize-handle-n:hover)::after { border-top-color: var(--interactive-accent); }
+.hover-popup:has(.resize-handle-s:hover)::after { border-bottom-color: var(--interactive-accent); }
+.hover-popup:has(.resize-handle-w:hover)::after { border-left-color: var(--interactive-accent); }
+.hover-popup:has(.resize-handle-e:hover)::after { border-right-color: var(--interactive-accent); }
 
-.resize-handle-s {
-    bottom: 0;
-    left: 12px;
-    right: 12px;
-    height: 6px;
-    cursor: ns-resize;
-}
-
-.resize-handle-w {
-    left: 0;
-    top: 12px;
-    bottom: 12px;
-    width: 6px;
-    cursor: ew-resize;
-}
-
-.resize-handle-e {
-    right: 0;
-    top: 12px;
-    bottom: 12px;
-    width: 6px;
-    cursor: ew-resize;
-}
-
-/* Corner handle positions */
-.resize-handle-nw {
-    top: 0;
-    left: 0;
-    width: 12px;
-    height: 12px;
-    cursor: nwse-resize;
-}
-
-.resize-handle-ne {
-    top: 0;
-    right: 0;
-    width: 12px;
-    height: 12px;
-    cursor: nesw-resize;
-}
-
-.resize-handle-sw {
-    bottom: 0;
-    left: 0;
-    width: 12px;
-    height: 12px;
-    cursor: nesw-resize;
-}
-
-.resize-handle-se {
-    bottom: 0;
-    right: 0;
-    width: 12px;
-    height: 12px;
-    cursor: nwse-resize;
-}
-
-/* Accent highlight on edge hover */
-.resize-handle-n:hover { border-top-color: var(--interactive-accent); }
-.resize-handle-s:hover { border-bottom-color: var(--interactive-accent); }
-.resize-handle-w:hover { border-left-color: var(--interactive-accent); }
-.resize-handle-e:hover { border-right-color: var(--interactive-accent); }
-
-/* Accent highlight on corner hover - L-shaped borders */
-.resize-handle-nw:hover { border-top-color: var(--interactive-accent); border-left-color: var(--interactive-accent); }
-.resize-handle-ne:hover { border-top-color: var(--interactive-accent); border-right-color: var(--interactive-accent); }
-.resize-handle-sw:hover { border-bottom-color: var(--interactive-accent); border-left-color: var(--interactive-accent); }
-.resize-handle-se:hover { border-bottom-color: var(--interactive-accent); border-right-color: var(--interactive-accent); }
+/* Corner hover highlights — two adjacent sides */
+.hover-popup:has(.resize-handle-nw:hover)::after { border-top-color: var(--interactive-accent); border-left-color: var(--interactive-accent); }
+.hover-popup:has(.resize-handle-ne:hover)::after { border-top-color: var(--interactive-accent); border-right-color: var(--interactive-accent); }
+.hover-popup:has(.resize-handle-sw:hover)::after { border-bottom-color: var(--interactive-accent); border-left-color: var(--interactive-accent); }
+.hover-popup:has(.resize-handle-se:hover)::after { border-bottom-color: var(--interactive-accent); border-right-color: var(--interactive-accent); }
 
 /* Disable iframe pointer events during resize */
 .hover-popup.is-resizing .preview-iframe-wrapper iframe {
