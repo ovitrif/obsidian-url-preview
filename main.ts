@@ -380,6 +380,8 @@ export default class LinkPreviewPlugin extends Plugin {
             window.clearTimeout(this.stillnessCheckTimeout);
             this.stillnessCheckTimeout = undefined;
         }
+        // Safety net: remove any orphaned preview popups
+        document.querySelectorAll('.hover-popup').forEach(el => el.remove());
     }
 
     private isModifierKeyPressed(event: MouseEvent): boolean {
