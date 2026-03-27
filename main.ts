@@ -228,6 +228,7 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private showPreview(link: HTMLElement, url: string) {
+        this.cleanupActivePreview();
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect);
 
