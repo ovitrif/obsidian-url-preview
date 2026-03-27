@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Resizable preview window: drag edges or corners to resize the popup
+- Accent-colored border highlight on hover over resize handles (uses Obsidian's accent color)
+- Live size indicator showing dimensions during resize
+- New setting: "Allow resize" (default: on)
+- New setting: "Persist resize" to remember resized dimensions across previews (default: on)
+
 ## [0.3.0] - 2026-02-28
 
 ### Added
