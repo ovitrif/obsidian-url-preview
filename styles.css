@@ -149,6 +149,19 @@
     white-space: nowrap;
 }
 
+/* Loading spinner near cursor during hover delay */
+.preview-loading-cursor {
+    position: fixed;
+    z-index: 1001;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--text-muted);
+    border-radius: 50%;
+    border-right-color: transparent;
+    animation: rotate 0.5s linear infinite;
+    pointer-events: none;
+}
+
 /* Settings tab - remove extra bottom spacing from setting groups */
 .settings-group-no-margin {
     margin-bottom: 0;

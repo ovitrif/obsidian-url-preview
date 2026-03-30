@@ -82,6 +82,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private lastMovementTime = 0;
     private stillnessCheckTimeout?: number;
     private activeResizeCleanup?: () => void;
+    private loadingIndicator?: HTMLElement;
 
     async onload() {
         await this.loadSettings();
@@ -106,6 +107,12 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
+                if (this.loadingIndicator) {
+                    this.loadingIndicator.setCssStyles({
+                        left: `${e.clientX + 12}px`,
+                        top: `${e.clientY + 12}px`,
+                    });
+                }
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (e.key === 'Escape' && this.activePreview) {
@@ -181,6 +188,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 window.clearTimeout(this.cleanupTimeout);
                 this.cleanupTimeout = undefined;
             }
+            this.removeLoadingIndicator();
             return;
         }
 
@@ -188,6 +196,7 @@ export default class LinkPreviewPlugin extends Plugin {
         this.cleanupActivePreview();
 
         // Set timeout for showing preview
+        this.showLoadingIndicator();
         this.hoverTimeout = window.setTimeout(() => {
             this.tryShowPreview(linkElement, url);
         }, this.settings.hoverDelay);
@@ -228,6 +237,7 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private showPreview(link: HTMLElement, url: string) {
+        this.removeLoadingIndicator();
         this.cleanupActivePreview();
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect);
@@ -360,6 +370,7 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private cleanupActivePreview() {
+        this.removeLoadingIndicator();
         if (this.activeResizeCleanup) {
             this.activeResizeCleanup();
             this.activeResizeCleanup = undefined;
@@ -423,6 +434,9 @@ export default class LinkPreviewPlugin extends Plugin {
         // Check if ALL required modifiers are now pressed
         if (!this.areAllModifiersPressed()) return;
 
+        // Skip if mouse hasn't moved recently — user is likely typing/editing
+        if (Date.now() - this.lastMovementTime > 1500) return;
+
         // Find element under cursor
         const elementUnderCursor = document.elementFromPoint(this.lastMouseX, this.lastMouseY);
         if (!elementUnderCursor) return;
@@ -433,6 +447,7 @@ export default class LinkPreviewPlugin extends Plugin {
             if (this.hoverTimeout) {
                 window.clearTimeout(this.hoverTimeout);
             }
+            this.showLoadingIndicator();
             this.hoverTimeout = window.setTimeout(() => {
                 this.tryShowPreview(linkInfo.element, linkInfo.url);
             }, this.settings.hoverDelay);
@@ -487,6 +502,22 @@ export default class LinkPreviewPlugin extends Plugin {
 
     onunload() {
         this.cleanupActivePreview();
+    }
+
+    private showLoadingIndicator() {
+        this.removeLoadingIndicator();
+        const el = createEl('div', { cls: 'preview-loading-cursor' });
+        el.setCssStyles({
+            left: `${this.lastMouseX + 12}px`,
+            top: `${this.lastMouseY + 12}px`,
+        });
+        document.body.appendChild(el);
+        this.loadingIndicator = el;
+    }
+
+    private removeLoadingIndicator() {
+        this.loadingIndicator?.remove();
+        this.loadingIndicator = undefined;
     }
 
     private createPreviewElement(rect: DOMRect): HTMLElement {
