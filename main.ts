@@ -1072,10 +1072,16 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     }));
         });
 
+        const hasPersistedSize = this.plugin.settings.persistedWidth != null
+            && this.plugin.settings.persistedHeight != null;
+        const persistDesc = hasPersistedSize
+            ? `Remember resized dimensions for future previews (current: ${this.plugin.settings.persistedWidth}\u00d7${this.plugin.settings.persistedHeight})`
+            : 'Remember resized dimensions for future previews';
+
         resizeGroup.addSetting(setting => {
             setting
                 .setName('Persist resize')
-                .setDesc('Remember resized dimensions for future previews')
+                .setDesc(persistDesc)
                 .addToggle(toggle => {
                     toggle
                         .setValue(this.plugin.settings.persistResize)
@@ -1086,9 +1092,20 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                                 this.plugin.settings.persistedHeight = undefined;
                             }
                             await this.plugin.saveSettings();
+                            this.display();
                         });
                     toggle.setDisabled(!isResizeEnabled);
                 });
+            if (hasPersistedSize && isResizeEnabled) {
+                setting.addButton(button => button
+                    .setButtonText('Reset')
+                    .onClick(async () => {
+                        this.plugin.settings.persistedWidth = undefined;
+                        this.plugin.settings.persistedHeight = undefined;
+                        await this.plugin.saveSettings();
+                        this.display();
+                    }));
+            }
             if (!isResizeEnabled) {
                 setting.settingEl.addClass('setting-disabled');
             }
