@@ -213,7 +213,14 @@ export default class LinkPreviewPlugin extends Plugin {
             const toElement = e.relatedTarget as HTMLElement | null;
             if (toElement && this.activePreview?.element.contains(toElement)) return;
 
-            this.startCleanupTimer();
+            // If preview hasn't shown yet, cancel the pending load
+            if (!this.activePreview && this.hoverTimeout) {
+                window.clearTimeout(this.hoverTimeout);
+                this.hoverTimeout = undefined;
+                this.removeLoadingIndicator();
+            } else {
+                this.startCleanupTimer();
+            }
             linkElement.removeEventListener('mouseleave', handleMouseLeave);
         };
 
@@ -221,6 +228,11 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private tryShowPreview(linkElement: HTMLElement, url: string) {
+        // If modifiers are required but no longer held, cancel
+        if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
+            this.removeLoadingIndicator();
+            return;
+        }
         // Check mouse stillness if delay is configured
         if (this.settings.mouseStillnessDelay > 0) {
             const timeSinceMovement = Date.now() - this.lastMovementTime;
@@ -455,9 +467,22 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private handleModifierKeyUp() {
-        // Close preview when any required modifier key is released (unless sticky popup is enabled)
-        if (this.settings.closeOnModifierRelease && !this.settings.stickyPopup && !this.areAllModifiersPressed()) {
-            this.cleanupActivePreview();
+        if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
+            // Always cancel pending preview when modifiers released
+            if (this.hoverTimeout) {
+                window.clearTimeout(this.hoverTimeout);
+                this.hoverTimeout = undefined;
+            }
+            if (this.stillnessCheckTimeout) {
+                window.clearTimeout(this.stillnessCheckTimeout);
+                this.stillnessCheckTimeout = undefined;
+            }
+            this.removeLoadingIndicator();
+
+            // Only close visible preview if setting is enabled
+            if (this.settings.closeOnModifierRelease && !this.settings.stickyPopup) {
+                this.cleanupActivePreview();
+            }
         }
     }
 
