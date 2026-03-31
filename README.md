@@ -6,12 +6,18 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 ## Features
 
-- Hold a modifier key (⌘/Ctrl) + hover to preview any external link
-- Works in all editing modes (Editor, Live Preview, Reader)
-- Press ESC to dismiss the preview
-- Configurable modifier key (Command, Control, Alt, or Shift)
-- Customizable preview window size and hover delay
+- Hold a configurable modifier key (⌘, Control, Alt, or Shift) + hover to preview URLs
+- Works in all view modes (Editor, Live Preview, Reader)
 - Clean interface that matches Obsidian's theme
+- Press ESC to dismiss the preview window
+- Customize preview window size, hover delay until it appears, mouse sensitivity tolerance
+- Resize preview window by dragging edges or corners
+  - Accent-colored border highlight on resize handle hover (uses Obsidian's accent color)
+  - Live size indicator showing dimensions during resize
+  - Optionally persist resized dimensions across previews
+- Loading spinner near cursor during hover delay
+- Smart keyboard trigger suppression while editing (prevents unwanted popups)
+- Pending preview auto-cancelled if modifier keys are released or mouse leaves link
 
 ## Installation
 
@@ -23,11 +29,16 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 ## Settings
 
 - **Require Modifier Key**: Only show preview when holding a modifier key (enabled by default)
-- **Modifier Key**: Choose which key to hold (Command, Control, Alt, or Shift)
-- **Close on Key Release**: Close preview when modifier key is released (or keep open until mouse leave/ESC)
+- **Modifier Keys**: Choose which keys to hold (Command, Control, Alt, Shift — can combine multiple)
+- **Close on Key Release**: Close preview when modifier key is released
+- **Sticky Popup**: Keep preview open until ESC or click outside
+- **Show Open in Browser Button**: Show a button to open the URL in the default browser
+- **Show Close Button**: Show a button to close the preview popup
 - **Hover Delay**: How long to wait before showing the preview (in milliseconds)
-- **Maximum Height**: Maximum height of the preview window (in pixels)
-- **Maximum Width**: Maximum width of the preview window (in pixels)
+- **Mouse Stillness Delay**: Time the mouse must be stationary before showing preview
+- **Maximum Height / Width**: Maximum dimensions of the preview window (in pixels)
+- **Allow Resize**: Enable drag-to-resize on preview edges and corners
+- **Persist Resize**: Remember resized dimensions for future previews (with reset button)
 
 ## Usage
 
