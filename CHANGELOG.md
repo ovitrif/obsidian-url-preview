@@ -12,8 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resizable preview window: drag edges or corners to resize the popup
 - Accent-colored border highlight on hover over resize handles (uses Obsidian's accent color)
 - Live size indicator showing dimensions during resize
+- Loading spinner near cursor during hover delay
 - New setting: "Allow resize" (default: on)
-- New setting: "Persist resize" to remember resized dimensions across previews (default: on)
+- New setting: "Persist resize" to remember resized dimensions across previews (default: off)
+
+### Fixed
+
+- Preview no longer pops up unwanted when using modifier keys to edit text (keyboard trigger requires recent mouse movement)
+- Pending preview cancelled when modifier keys are released before preview appears
+- Pending preview cancelled when mouse leaves link before preview appears
+- Orphaned preview windows that could not be closed via ESC or close button
 
 ## [0.3.0] - 2026-02-28
 
