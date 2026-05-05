@@ -311,7 +311,7 @@ export default class LinkPreviewPlugin extends Plugin {
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect, doc);
 
-        if (this.settings.showOpenInBrowser || this.settings.showCloseButton) {
+        if (this.shouldShowToolbar()) {
             this.createButtons(previewEl, url);
         }
 
@@ -636,9 +636,42 @@ export default class LinkPreviewPlugin extends Plugin {
         return el;
     }
 
+    private shouldShowToolbar(): boolean {
+        return this.settings.showOpenInBrowser || this.settings.showCloseButton || this.settings.allowResize;
+    }
+
     private createButtons(container: HTMLElement, url: string) {
         const buttons = container.createDiv('preview-buttons');
         const win = container.ownerDocument.defaultView ?? window;
+
+        if (this.settings.allowResize) {
+            let restoreBounds: { left: number, top: number, width: number, height: number } | null = null;
+            const resizeBtn = buttons.createEl('button', { cls: 'clickable-icon' });
+            setIcon(resizeBtn, 'maximize-2');
+            setTooltip(resizeBtn, 'Expand preview');
+            resizeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+
+                if (restoreBounds) {
+                    this.applyPreviewBounds(container, restoreBounds);
+                    restoreBounds = null;
+                    setIcon(resizeBtn, 'maximize-2');
+                    setTooltip(resizeBtn, 'Expand preview');
+                    return;
+                }
+
+                const rect = container.getBoundingClientRect();
+                restoreBounds = {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                };
+                this.applyPreviewBounds(container, this.calculateExpandedPreviewBounds(container.ownerDocument));
+                setIcon(resizeBtn, 'minimize-2');
+                setTooltip(resizeBtn, 'Restore preview size');
+            });
+        }
 
         if (this.settings.showOpenInBrowser) {
             const openBtn = buttons.createEl('button', { cls: 'clickable-icon' });
@@ -659,6 +692,27 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.cleanupActivePreview();
             });
         }
+    }
+
+    private calculateExpandedPreviewBounds(doc: Document): { left: number, top: number, width: number, height: number } {
+        const win = doc.defaultView ?? window;
+        const margin = 5;
+
+        return {
+            left: margin,
+            top: margin,
+            width: Math.max(MIN_PREVIEW_WIDTH, win.innerWidth - margin * 2),
+            height: Math.max(MIN_PREVIEW_HEIGHT, win.innerHeight - margin * 2),
+        };
+    }
+
+    private applyPreviewBounds(previewEl: HTMLElement, bounds: { left: number, top: number, width: number, height: number }) {
+        previewEl.setCssStyles({
+            left: `${bounds.left}px`,
+            top: `${bounds.top}px`,
+            width: `${bounds.width}px`,
+            height: `${bounds.height}px`,
+        });
     }
 
     private createResizeHandles(previewEl: HTMLElement) {
