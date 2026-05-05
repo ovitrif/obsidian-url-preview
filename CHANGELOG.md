@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-05
+
+### Added
+
+- Quick expand/restore button in the preview toolbar for fast size adjustment (#7)
+
+### Changed
+
+- Preview controls now appear in a toolbar above the preview content instead of overlaying the iframe (#7)
+- Default settings now use a 1000ms hover delay, 1000ms mouse stillness delay, sticky popups, and no close-on-key-release while keeping Command as the default modifier on macOS and Ctrl on Windows/Linux
+
+### Fixed
+
+- URL previews now work in secondary Obsidian windows/popouts (#6)
+- Editor links with square brackets in the link text now show previews
+- Repeated editor links now resolve from the hovered link occurrence instead of matching by the first similar text
+
 ## [0.4.0] - 2026-03-31
 
 ### Added

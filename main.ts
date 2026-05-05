@@ -1,7 +1,31 @@
-import { App, Plugin, PluginSettingTab, Setting, SettingGroup, MarkdownView, Platform, setIcon, setTooltip } from 'obsidian';
+import { EditorView } from '@codemirror/view';
+import { App, Plugin, PluginSettingTab, Setting, SettingGroup, Platform, setIcon, setTooltip } from 'obsidian';
 
 type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
 type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
+
+interface ScreenPoint {
+    x: number;
+    y: number;
+}
+
+interface LinkInfo {
+    element: HTMLElement;
+    hoverElement: HTMLElement;
+    sourceKey?: string;
+    url: string;
+}
+
+interface ParsedMarkdownLink {
+    destinationEnd: number;
+    destinationStart: number;
+    end: number;
+    start: number;
+    text: string;
+    textEnd: number;
+    textStart: number;
+    url: string;
+}
 
 const MIN_PREVIEW_WIDTH = 200;
 const MIN_PREVIEW_HEIGHT = 150;
@@ -56,11 +80,11 @@ const DEFAULT_MODIFIER_KEYS: ModifierKeyConfig = {
 const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'persistedWidth' | 'persistedHeight'>> = {
     maxPreviewHeight: 960,
     maxPreviewWidth: 720,
-    hoverDelay: 500,
+    hoverDelay: 1000,
     requireModifierKey: true,
-    closeOnModifierRelease: true,
-    mouseStillnessDelay: 0,
-    stickyPopup: false,
+    closeOnModifierRelease: false,
+    mouseStillnessDelay: 1000,
+    stickyPopup: true,
     showOpenInBrowser: true,
     showCloseButton: true,
     allowResize: true,
@@ -73,9 +97,15 @@ export default class LinkPreviewPlugin extends Plugin {
     private activePreview?: {
         element: HTMLElement,
         cleanup: () => void,
-        link: HTMLElement
+        doc: Document,
+        link: HTMLElement,
+        sourceKey?: string
     };
     private hoverTimeout?: number;
+    private pendingPreview?: {
+        hoverElement: HTMLElement,
+        sourceKey?: string
+    };
     private lastMouseX = 0;
     private lastMouseY = 0;
     private modifierState: ModifierKeyConfig = { meta: false, ctrl: false, alt: false, shift: false };
@@ -83,6 +113,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private stillnessCheckTimeout?: number;
     private activeResizeCleanup?: () => void;
     private loadingIndicator?: HTMLElement;
+    private handledDocuments = new Set<Document>();
 
     async onload() {
         await this.loadSettings();
@@ -97,6 +128,9 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private registerGlobalHandler() {
         const handleWindow = (doc: Document) => {
+            if (this.handledDocuments.has(doc)) return;
+            this.handledDocuments.add(doc);
+
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => this.handleLinkHover(e));
             this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
                 // Track mouse stillness - only update time if mouse moved significantly (>2px)
@@ -122,7 +156,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.updateModifierState(e);
                 // Handle modifier key press while hovering over link
                 if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
-                    this.handleModifierKeyDown();
+                    this.handleModifierKeyDown(doc);
                 }
             });
             this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
@@ -140,8 +174,20 @@ export default class LinkPreviewPlugin extends Plugin {
         };
 
         handleWindow(document);
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            handleWindow(leaf.view.containerEl.ownerDocument);
+        });
+
         this.registerEvent(
-            this.app.workspace.on('window-open', ({win}) => handleWindow(win.document))
+            this.app.workspace.on('window-open', (workspaceWindow) => handleWindow(workspaceWindow.doc))
+        );
+        this.registerEvent(
+            this.app.workspace.on('window-close', (workspaceWindow) => {
+                if (this.activePreview?.doc === workspaceWindow.doc) {
+                    this.cleanupActivePreview();
+                }
+                this.handledDocuments.delete(workspaceWindow.doc);
+            })
         );
     }
 
@@ -166,24 +212,14 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
-        const linkInfo = this.findLinkElement(target, event.relatedTarget as Element | null);
+        const relatedTarget = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+        const linkInfo = this.findLinkElement(target, relatedTarget, { x: event.clientX, y: event.clientY });
         if (!linkInfo) return;
 
-        const { element: linkElement, url } = linkInfo;
+        const { element: linkElement, hoverElement, sourceKey, url } = linkInfo;
+        const targetDoc = hoverElement.ownerDocument;
 
-        // Clear any existing hover timeout
-        if (this.hoverTimeout) {
-            window.clearTimeout(this.hoverTimeout);
-        }
-
-        // Clear any existing stillness check
-        if (this.stillnessCheckTimeout) {
-            window.clearTimeout(this.stillnessCheckTimeout);
-            this.stillnessCheckTimeout = undefined;
-        }
-
-        // If hovering the same link that has an active preview, clear any pending cleanup
-        if (this.activePreview?.link === linkElement) {
+        if (this.isActivePreviewForLink(linkInfo)) {
             if (this.cleanupTimeout) {
                 window.clearTimeout(this.cleanupTimeout);
                 this.cleanupTimeout = undefined;
@@ -192,20 +228,37 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
+        if (this.isPendingPreviewForLink(linkInfo)) {
+            return;
+        }
+
+        // Clear any existing hover timeout
+        if (this.hoverTimeout) {
+            window.clearTimeout(this.hoverTimeout);
+            this.pendingPreview = undefined;
+        }
+
+        // Clear any existing stillness check
+        if (this.stillnessCheckTimeout) {
+            window.clearTimeout(this.stillnessCheckTimeout);
+            this.stillnessCheckTimeout = undefined;
+        }
+
         // Clean up any existing preview
         this.cleanupActivePreview();
 
         // Set timeout for showing preview
-        this.showLoadingIndicator();
+        this.showLoadingIndicator(targetDoc);
+        this.pendingPreview = { hoverElement, sourceKey };
         this.hoverTimeout = window.setTimeout(() => {
-            this.tryShowPreview(linkElement, url);
+            this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
         }, this.settings.hoverDelay);
 
         // Add mouse leave listener to target
         const handleMouseLeave = (e: MouseEvent) => {
             // Skip cleanup timer if sticky popup is enabled
             if (this.settings.stickyPopup) {
-                linkElement.removeEventListener('mouseleave', handleMouseLeave);
+                hoverElement.removeEventListener('mouseleave', handleMouseLeave);
                 return;
             }
 
@@ -217,20 +270,22 @@ export default class LinkPreviewPlugin extends Plugin {
             if (!this.activePreview && this.hoverTimeout) {
                 window.clearTimeout(this.hoverTimeout);
                 this.hoverTimeout = undefined;
+                this.pendingPreview = undefined;
                 this.removeLoadingIndicator();
             } else {
                 this.startCleanupTimer();
             }
-            linkElement.removeEventListener('mouseleave', handleMouseLeave);
+            hoverElement.removeEventListener('mouseleave', handleMouseLeave);
         };
 
-        linkElement.addEventListener('mouseleave', handleMouseLeave);
+        hoverElement.addEventListener('mouseleave', handleMouseLeave);
     }
 
-    private tryShowPreview(linkElement: HTMLElement, url: string) {
+    private tryShowPreview(linkElement: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         // If modifiers are required but no longer held, cancel
         if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
             this.removeLoadingIndicator();
+            this.pendingPreview = undefined;
             return;
         }
         // Check mouse stillness if delay is configured
@@ -240,21 +295,23 @@ export default class LinkPreviewPlugin extends Plugin {
                 // Mouse hasn't been still long enough, reschedule check
                 const remainingTime = this.settings.mouseStillnessDelay - timeSinceMovement;
                 this.stillnessCheckTimeout = window.setTimeout(() => {
-                    this.tryShowPreview(linkElement, url);
+                    this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
                 }, Math.min(remainingTime, 50)); // Poll at most every 50ms
                 return;
             }
         }
-        this.showPreview(linkElement, url);
+        this.showPreview(linkElement, url, hoverElement, sourceKey);
     }
 
-    private showPreview(link: HTMLElement, url: string) {
+    private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         this.removeLoadingIndicator();
         this.cleanupActivePreview();
+        this.pendingPreview = undefined;
+        const doc = link.ownerDocument;
         const rect = link.getBoundingClientRect();
-        const previewEl = this.createPreviewElement(rect);
+        const previewEl = this.createPreviewElement(rect, doc);
 
-        if (this.settings.showOpenInBrowser || this.settings.showCloseButton) {
+        if (this.shouldShowToolbar()) {
             this.createButtons(previewEl, url);
         }
 
@@ -268,11 +325,8 @@ export default class LinkPreviewPlugin extends Plugin {
         const loading = previewEl.createDiv('preview-loading');
         loading.addClass('loading-spinner');
         
-        const iframe = createEl('iframe', {
-            attr: {
-                src: url
-            }
-        });
+        const iframe = doc.createElement('iframe');
+        iframe.setAttribute('src', url);
         
         wrapper.appendChild(iframe);
 
@@ -312,13 +366,13 @@ export default class LinkPreviewPlugin extends Plugin {
         if (this.settings.stickyPopup) {
             clickOutsideHandler = (e: MouseEvent) => {
                 const target = e.target as Element;
-                if (!previewEl.contains(target) && !link.contains(target)) {
+                if (!previewEl.contains(target) && !hoverElement.contains(target)) {
                     this.cleanupActivePreview();
                 }
             };
             // Delay adding listener to avoid immediate trigger from the click that might have opened it
             setTimeout(() => {
-                document.addEventListener('click', clickOutsideHandler!);
+                doc.addEventListener('click', clickOutsideHandler!);
             }, 0);
         }
 
@@ -326,7 +380,7 @@ export default class LinkPreviewPlugin extends Plugin {
         const originalCleanup = cleanup;
         const cleanupWithClickHandler = () => {
             if (clickOutsideHandler) {
-                document.removeEventListener('click', clickOutsideHandler);
+                doc.removeEventListener('click', clickOutsideHandler);
             }
             originalCleanup();
         };
@@ -335,8 +389,8 @@ export default class LinkPreviewPlugin extends Plugin {
             this.createResizeHandles(previewEl);
         }
 
-        document.body.appendChild(previewEl);
-        this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, link };
+        doc.body.appendChild(previewEl);
+        this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
     }
 
     private cleanupTimeout?: number;
@@ -394,6 +448,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (this.hoverTimeout) {
             window.clearTimeout(this.hoverTimeout);
             this.hoverTimeout = undefined;
+            this.pendingPreview = undefined;
         }
         if (this.cleanupTimeout) {
             window.clearTimeout(this.cleanupTimeout);
@@ -404,7 +459,7 @@ export default class LinkPreviewPlugin extends Plugin {
             this.stillnessCheckTimeout = undefined;
         }
         // Safety net: remove any orphaned preview popups
-        document.querySelectorAll('.hover-popup').forEach(el => el.remove());
+        this.removeOrphanedPreviews();
     }
 
     private isModifierKeyPressed(event: MouseEvent): boolean {
@@ -439,7 +494,7 @@ export default class LinkPreviewPlugin extends Plugin {
         return keys.meta || keys.ctrl || keys.alt || keys.shift;
     }
 
-    private handleModifierKeyDown() {
+    private handleModifierKeyDown(doc: Document) {
         // If already showing a preview, do nothing
         if (this.activePreview) return;
 
@@ -450,18 +505,23 @@ export default class LinkPreviewPlugin extends Plugin {
         if (Date.now() - this.lastMovementTime > 1500) return;
 
         // Find element under cursor
-        const elementUnderCursor = document.elementFromPoint(this.lastMouseX, this.lastMouseY);
+        const elementUnderCursor = doc.elementFromPoint(this.lastMouseX, this.lastMouseY);
         if (!elementUnderCursor) return;
 
-        const linkInfo = this.findLinkElement(elementUnderCursor, null);
+        const linkInfo = this.findLinkElement(elementUnderCursor, null, { x: this.lastMouseX, y: this.lastMouseY });
         if (linkInfo) {
             // Clear any existing timeout and show preview after delay
             if (this.hoverTimeout) {
                 window.clearTimeout(this.hoverTimeout);
+                this.pendingPreview = undefined;
             }
-            this.showLoadingIndicator();
+            this.showLoadingIndicator(linkInfo.hoverElement.ownerDocument);
+            this.pendingPreview = {
+                hoverElement: linkInfo.hoverElement,
+                sourceKey: linkInfo.sourceKey,
+            };
             this.hoverTimeout = window.setTimeout(() => {
-                this.tryShowPreview(linkInfo.element, linkInfo.url);
+                this.tryShowPreview(linkInfo.element, linkInfo.url, linkInfo.hoverElement, linkInfo.sourceKey);
             }, this.settings.hoverDelay);
         }
     }
@@ -472,10 +532,12 @@ export default class LinkPreviewPlugin extends Plugin {
             if (this.hoverTimeout) {
                 window.clearTimeout(this.hoverTimeout);
                 this.hoverTimeout = undefined;
+                this.pendingPreview = undefined;
             }
             if (this.stillnessCheckTimeout) {
                 window.clearTimeout(this.stillnessCheckTimeout);
                 this.stillnessCheckTimeout = undefined;
+                this.pendingPreview = undefined;
             }
             this.removeLoadingIndicator();
 
@@ -529,14 +591,21 @@ export default class LinkPreviewPlugin extends Plugin {
         this.cleanupActivePreview();
     }
 
-    private showLoadingIndicator() {
+    private removeOrphanedPreviews() {
+        for (const doc of this.handledDocuments) {
+            doc.querySelectorAll('.hover-popup').forEach(el => el.remove());
+        }
+    }
+
+    private showLoadingIndicator(doc: Document) {
         this.removeLoadingIndicator();
-        const el = createEl('div', { cls: 'preview-loading-cursor' });
+        const el = doc.createElement('div');
+        el.addClass('preview-loading-cursor');
         el.setCssStyles({
             left: `${this.lastMouseX + 12}px`,
             top: `${this.lastMouseY + 12}px`,
         });
-        document.body.appendChild(el);
+        doc.body.appendChild(el);
         this.loadingIndicator = el;
     }
 
@@ -545,12 +614,14 @@ export default class LinkPreviewPlugin extends Plugin {
         this.loadingIndicator = undefined;
     }
 
-    private createPreviewElement(rect: DOMRect): HTMLElement {
-        const el = createEl('div', { cls: 'hover-popup' });
+    private createPreviewElement(rect: DOMRect, doc: Document): HTMLElement {
+        const el = doc.createElement('div');
+        el.addClass('hover-popup');
+        const win = doc.defaultView ?? window;
         
         const windowSize = {
-            width: window.innerWidth,
-            height: window.innerHeight
+            width: win.innerWidth,
+            height: win.innerHeight
         };
         
         const bounds = this.calculatePreviewBounds(rect, windowSize);
@@ -565,8 +636,42 @@ export default class LinkPreviewPlugin extends Plugin {
         return el;
     }
 
+    private shouldShowToolbar(): boolean {
+        return this.settings.showOpenInBrowser || this.settings.showCloseButton || this.settings.allowResize;
+    }
+
     private createButtons(container: HTMLElement, url: string) {
         const buttons = container.createDiv('preview-buttons');
+        const win = container.ownerDocument.defaultView ?? window;
+
+        if (this.settings.allowResize) {
+            let restoreBounds: { left: number, top: number, width: number, height: number } | null = null;
+            const resizeBtn = buttons.createEl('button', { cls: 'clickable-icon' });
+            setIcon(resizeBtn, 'maximize-2');
+            setTooltip(resizeBtn, 'Expand preview');
+            resizeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+
+                if (restoreBounds) {
+                    this.applyPreviewBounds(container, restoreBounds);
+                    restoreBounds = null;
+                    setIcon(resizeBtn, 'maximize-2');
+                    setTooltip(resizeBtn, 'Expand preview');
+                    return;
+                }
+
+                const rect = container.getBoundingClientRect();
+                restoreBounds = {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                };
+                this.applyPreviewBounds(container, this.calculateExpandedPreviewBounds(container.ownerDocument));
+                setIcon(resizeBtn, 'minimize-2');
+                setTooltip(resizeBtn, 'Restore preview size');
+            });
+        }
 
         if (this.settings.showOpenInBrowser) {
             const openBtn = buttons.createEl('button', { cls: 'clickable-icon' });
@@ -574,7 +679,7 @@ export default class LinkPreviewPlugin extends Plugin {
             setTooltip(openBtn, 'Open in external browser');
             openBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                window.open(url);
+                win.open(url);
             });
         }
 
@@ -589,6 +694,27 @@ export default class LinkPreviewPlugin extends Plugin {
         }
     }
 
+    private calculateExpandedPreviewBounds(doc: Document): { left: number, top: number, width: number, height: number } {
+        const win = doc.defaultView ?? window;
+        const margin = 5;
+
+        return {
+            left: margin,
+            top: margin,
+            width: Math.max(MIN_PREVIEW_WIDTH, win.innerWidth - margin * 2),
+            height: Math.max(MIN_PREVIEW_HEIGHT, win.innerHeight - margin * 2),
+        };
+    }
+
+    private applyPreviewBounds(previewEl: HTMLElement, bounds: { left: number, top: number, width: number, height: number }) {
+        previewEl.setCssStyles({
+            left: `${bounds.left}px`,
+            top: `${bounds.top}px`,
+            width: `${bounds.width}px`,
+            height: `${bounds.height}px`,
+        });
+    }
+
     private createResizeHandles(previewEl: HTMLElement) {
         for (const { direction, cls } of RESIZE_HANDLES) {
             const handle = previewEl.createDiv(`resize-handle ${cls}`);
@@ -601,18 +727,21 @@ export default class LinkPreviewPlugin extends Plugin {
         e.stopPropagation();
 
         previewEl.addClass('is-resizing');
+        const doc = previewEl.ownerDocument;
+        const win = doc.defaultView ?? window;
 
         const startX = e.clientX;
         const startY = e.clientY;
         const initialRect = previewEl.getBoundingClientRect();
 
-        const indicator = createEl('div', { cls: 'resize-size-indicator' });
+        const indicator = doc.createElement('div');
+        indicator.addClass('resize-size-indicator');
         indicator.textContent = `${Math.round(initialRect.width)}\u00d7${Math.round(initialRect.height)}`;
         indicator.setCssStyles({
             left: `${e.clientX + 12}px`,
             top: `${e.clientY + 12}px`,
         });
-        document.body.appendChild(indicator);
+        doc.body.appendChild(indicator);
 
         const margin = 5;
 
@@ -643,11 +772,11 @@ export default class LinkPreviewPlugin extends Plugin {
             // Clamp to viewport
             newLeft = Math.max(margin, newLeft);
             newTop = Math.max(margin, newTop);
-            if (newLeft + newWidth > window.innerWidth - margin) {
-                newWidth = window.innerWidth - margin - newLeft;
+            if (newLeft + newWidth > win.innerWidth - margin) {
+                newWidth = win.innerWidth - margin - newLeft;
             }
-            if (newTop + newHeight > window.innerHeight - margin) {
-                newHeight = window.innerHeight - margin - newTop;
+            if (newTop + newHeight > win.innerHeight - margin) {
+                newHeight = win.innerHeight - margin - newTop;
             }
 
             previewEl.setCssStyles({
@@ -666,8 +795,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const onMouseUp = () => {
             previewEl.removeClass('is-resizing');
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
+            doc.removeEventListener('mousemove', onMouseMove);
+            doc.removeEventListener('mouseup', onMouseUp);
             indicator.remove();
             this.activeResizeCleanup = undefined;
 
@@ -681,13 +810,13 @@ export default class LinkPreviewPlugin extends Plugin {
 
         this.activeResizeCleanup = () => {
             previewEl.removeClass('is-resizing');
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
+            doc.removeEventListener('mousemove', onMouseMove);
+            doc.removeEventListener('mouseup', onMouseUp);
             indicator.remove();
         };
 
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
+        doc.addEventListener('mousemove', onMouseMove);
+        doc.addEventListener('mouseup', onMouseUp);
     }
 
     private calculatePreviewBounds(rect: DOMRect, windowSize: { width: number, height: number }): {
@@ -731,11 +860,17 @@ export default class LinkPreviewPlugin extends Plugin {
         };
     }
 
-    private findLinkElement(target: Element, relatedTarget: Element | null): { element: HTMLElement, url: string } | null {
+    private findLinkElement(target: Element, relatedTarget: Element | null, point?: ScreenPoint): LinkInfo | null {
+        const editorLinkInfo = this.getEditorLinkInfo(target, point);
+        if (editorLinkInfo) {
+            return editorLinkInfo;
+        }
+
         const LINK_SELECTOR = 'a.external-link, a[href^="http"], span.external-link, .cm-hmd-external-link, .cm-link .cm-underline, .cm-url, [data-href], [data-url]';
 
         let el: Element | null = target;
-        while (el && el !== document.body) {
+        const body = target.ownerDocument.body;
+        while (el && el !== body) {
             if (!(el instanceof HTMLElement)) {
                 el = el.parentElement;
                 continue;
@@ -750,20 +885,10 @@ export default class LinkPreviewPlugin extends Plugin {
                 return null;
             }
 
-            let url: string | null = null;
-
-            // In editor mode, use document search FIRST (DOM doesn't have URLs)
-            if (el.closest('.cm-editor')) {
-                url = this.getUrlFromEditorByText(el);
-            }
-
-            // Fallback to DOM extraction (works in Reader mode)
-            if (!url) {
-                url = this.extractUrlFromElement(el);
-            }
+            const url = this.extractUrlFromElement(el);
 
             if (url) {
-                return { element: el, url };
+                return { element: el, hoverElement: el, url };
             }
 
             el = el.parentElement;
@@ -772,31 +897,99 @@ export default class LinkPreviewPlugin extends Plugin {
         return null;
     }
 
-    private getUrlFromEditorByText(element: HTMLElement): string | null {
-        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (!view?.editor) return null;
+    private getEditorLinkInfo(target: Element, point?: ScreenPoint): LinkInfo | null {
+        if (!(target instanceof HTMLElement)) return null;
 
+        const editorElement = target.closest('.cm-editor');
+        if (!(editorElement instanceof HTMLElement)) return null;
+
+        const editorView = EditorView.findFromDOM(target) ?? EditorView.findFromDOM(editorElement);
+        if (!editorView) return null;
+
+        const content = editorView.state.doc.toString();
+        const hoverElement = this.getEditorHoverElement(target, editorElement);
+        const pointLink = point ? this.getMarkdownLinkAtPoint(editorView, content, point) : null;
+
+        if (pointLink) {
+            return {
+                element: target,
+                hoverElement,
+                sourceKey: this.getMarkdownLinkSourceKey(pointLink),
+                url: pointLink.url,
+            };
+        }
+
+        if (!this.isEditorLinkLikeElement(target)) {
+            return null;
+        }
+
+        const textLink = this.getMarkdownLinkByDisplayText(content, target);
+        if (textLink) {
+            return {
+                element: target,
+                hoverElement,
+                sourceKey: this.getMarkdownLinkSourceKey(textLink),
+                url: textLink.url,
+            };
+        }
+
+        return null;
+    }
+
+    private getEditorHoverElement(target: HTMLElement, editorElement: HTMLElement): HTMLElement {
+        const lineElement = target.closest('.cm-line');
+        if (lineElement instanceof HTMLElement) {
+            return lineElement;
+        }
+        return editorElement;
+    }
+
+    private isEditorLinkLikeElement(element: HTMLElement): boolean {
+        return Boolean(element.closest('.cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]'));
+    }
+
+    private getMarkdownLinkAtPoint(editorView: EditorView, content: string, point: ScreenPoint): ParsedMarkdownLink | null {
+        const offset = editorView.posAtCoords(point);
+        if (offset === null) return null;
+
+        const nearbyOffsets = [
+            offset,
+            Math.max(0, offset - 1),
+            Math.min(content.length, offset + 1),
+        ];
+        const links = this.parseMarkdownLinks(content);
+
+        for (const nearbyOffset of nearbyOffsets) {
+            const link = this.findParsedMarkdownLinkAtOffset(links, nearbyOffset);
+            if (link) return link;
+        }
+
+        for (const nearbyOffset of nearbyOffsets) {
+            const link = this.getBareMarkdownUrlAtOffset(content, nearbyOffset);
+            if (link) return link;
+        }
+
+        return null;
+    }
+
+    private getMarkdownLinkByDisplayText(content: string, element: HTMLElement): ParsedMarkdownLink | null {
         const displayText = element.textContent?.trim();
         if (!displayText) return null;
 
-        const content = view.editor.getValue();
-        const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
-        let match;
-        let substringMatch: string | null = null;
+        let substringMatch: ParsedMarkdownLink | null = null;
 
-        while ((match = linkRegex.exec(content)) !== null) {
-            const linkText = match[1];
-            const url = match[2];
+        for (const link of this.parseMarkdownLinks(content)) {
+            const linkText = link.text.trim();
 
             // Exact match — return immediately
             if (linkText === displayText) {
-                return url;
+                return link;
             }
 
             // Substring match — remember first one, but keep looking for exact
             if (!substringMatch &&
                 (linkText.includes(displayText) || displayText.includes(linkText))) {
-                substringMatch = url;
+                substringMatch = link;
             }
         }
 
@@ -805,12 +998,195 @@ export default class LinkPreviewPlugin extends Plugin {
             return substringMatch;
         }
 
-        // Bare URL fallback
-        if (displayText.startsWith('http')) {
-            return this.normalizeUrl(displayText);
+        return this.getBareMarkdownUrl(displayText);
+    }
+
+    private findParsedMarkdownLinkAtOffset(links: ParsedMarkdownLink[], offset: number): ParsedMarkdownLink | null {
+        for (const link of links) {
+            if (offset >= link.start && offset <= link.end) {
+                return link;
+            }
         }
 
         return null;
+    }
+
+    private parseMarkdownLinks(content: string): ParsedMarkdownLink[] {
+        const links: ParsedMarkdownLink[] = [];
+        let index = 0;
+
+        while (index < content.length) {
+            const start = content.indexOf('[', index);
+            if (start === -1) break;
+
+            if (start > 0 && content[start - 1] === '!') {
+                index = start + 1;
+                continue;
+            }
+
+            const textEnd = this.findClosingBracket(content, start);
+            if (textEnd === -1 || content[textEnd + 1] !== '(') {
+                index = start + 1;
+                continue;
+            }
+
+            const destinationStart = textEnd + 2;
+            const destinationEnd = this.findClosingParen(content, destinationStart);
+            if (destinationEnd === -1) {
+                index = start + 1;
+                continue;
+            }
+
+            const url = this.extractMarkdownDestination(content.slice(destinationStart, destinationEnd));
+            if (url) {
+                links.push({
+                    destinationEnd,
+                    destinationStart,
+                    end: destinationEnd + 1,
+                    start,
+                    text: content.slice(start + 1, textEnd),
+                    textEnd,
+                    textStart: start + 1,
+                    url,
+                });
+            }
+
+            index = destinationEnd + 1;
+        }
+
+        return links;
+    }
+
+    private findClosingBracket(content: string, start: number): number {
+        let depth = 0;
+
+        for (let index = start; index < content.length; index++) {
+            const char = content[index];
+
+            if (char === '\\') {
+                index++;
+                continue;
+            }
+
+            if (char === '[') {
+                depth++;
+            } else if (char === ']') {
+                depth--;
+                if (depth === 0) {
+                    return index;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    private findClosingParen(content: string, start: number): number {
+        let depth = 0;
+
+        for (let index = start; index < content.length; index++) {
+            const char = content[index];
+
+            if (char === '\\') {
+                index++;
+                continue;
+            }
+
+            if (char === '(') {
+                depth++;
+            } else if (char === ')') {
+                if (depth === 0) {
+                    return index;
+                }
+                depth--;
+            }
+        }
+
+        return -1;
+    }
+
+    private extractMarkdownDestination(destination: string): string | null {
+        const trimmed = destination.trim();
+        if (!trimmed) return null;
+
+        if (trimmed.startsWith('<')) {
+            const end = trimmed.indexOf('>');
+            if (end !== -1) {
+                return this.normalizeUrl(trimmed.slice(1, end));
+            }
+        }
+
+        return this.normalizeUrl(trimmed.split(/\s+/)[0]);
+    }
+
+    private getBareMarkdownUrl(displayText: string): ParsedMarkdownLink | null {
+        const url = this.normalizeUrl(displayText);
+        if (!url) return null;
+
+        return {
+            destinationEnd: displayText.length,
+            destinationStart: 0,
+            end: displayText.length,
+            start: 0,
+            text: displayText,
+            textEnd: displayText.length,
+            textStart: 0,
+            url,
+        };
+    }
+
+    private getBareMarkdownUrlAtOffset(content: string, offset: number): ParsedMarkdownLink | null {
+        const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
+        let match;
+
+        while ((match = urlRegex.exec(content)) !== null) {
+            const start = match.index;
+            const text = match[0];
+            const end = start + text.length;
+            if (offset < start || offset > end) continue;
+
+            const url = this.normalizeUrl(text);
+            if (!url) return null;
+
+            return {
+                destinationEnd: end,
+                destinationStart: start,
+                end,
+                start,
+                text,
+                textEnd: end,
+                textStart: start,
+                url,
+            };
+        }
+
+        return null;
+    }
+
+    private getMarkdownLinkSourceKey(link: ParsedMarkdownLink): string {
+        return `${link.start}:${link.end}:${link.url}`;
+    }
+
+    private isActivePreviewForLink(linkInfo: LinkInfo): boolean {
+        if (!this.activePreview) return false;
+        if (this.activePreview.link !== linkInfo.hoverElement) return false;
+
+        if (this.activePreview.sourceKey || linkInfo.sourceKey) {
+            return this.activePreview.sourceKey === linkInfo.sourceKey;
+        }
+
+        return true;
+    }
+
+    private isPendingPreviewForLink(linkInfo: LinkInfo): boolean {
+        if (!this.pendingPreview) return false;
+        if (this.pendingPreview.hoverElement !== linkInfo.hoverElement) return false;
+
+        if (this.pendingPreview.sourceKey || linkInfo.sourceKey) {
+            return this.pendingPreview.sourceKey === linkInfo.sourceKey;
+        }
+
+        return true;
     }
 
     private extractUrlFromElement(element: HTMLElement): string | null {
@@ -829,7 +1205,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
         // For CodeMirror elements, look for ancestor anchor or external-link
         let ancestor: HTMLElement | null = element;
-        while (ancestor && ancestor !== document.body) {
+        const body = element.ownerDocument.body;
+        while (ancestor && ancestor !== body) {
             if (ancestor instanceof HTMLAnchorElement && ancestor.href) {
                 return this.normalizeUrl(ancestor.href);
             }

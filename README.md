@@ -8,13 +8,16 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 - Hold a configurable modifier key (⌘, Control, Alt, or Shift) + hover to preview URLs
 - Works in all view modes (Editor, Live Preview, Reader)
+- Works in secondary Obsidian windows/popouts
 - Clean interface that matches Obsidian's theme
 - Press ESC to dismiss the preview window
 - Customize preview window size, hover delay until it appears, mouse sensitivity tolerance
 - Resize preview window by dragging edges or corners
+  - Toolbar button to quickly expand or restore the preview size
   - Accent-colored border highlight on resize handle hover (uses Obsidian's accent color)
   - Live size indicator showing dimensions during resize
   - Optionally persist resized dimensions across previews
+- Preview controls live in a toolbar above the content, so they do not cover the page being previewed
 - Loading spinner near cursor during hover delay
 - Smart keyboard trigger suppression while editing (prevents unwanted popups)
 - Pending preview auto-cancelled if modifier keys are released or mouse leaves link
