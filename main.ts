@@ -1,7 +1,31 @@
-import { App, Plugin, PluginSettingTab, Setting, SettingGroup, MarkdownView, Platform, setIcon, setTooltip } from 'obsidian';
+import { EditorView } from '@codemirror/view';
+import { App, Plugin, PluginSettingTab, Setting, SettingGroup, Platform, setIcon, setTooltip } from 'obsidian';
 
 type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
 type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
+
+interface ScreenPoint {
+    x: number;
+    y: number;
+}
+
+interface LinkInfo {
+    element: HTMLElement;
+    hoverElement: HTMLElement;
+    sourceKey?: string;
+    url: string;
+}
+
+interface ParsedMarkdownLink {
+    destinationEnd: number;
+    destinationStart: number;
+    end: number;
+    start: number;
+    text: string;
+    textEnd: number;
+    textStart: number;
+    url: string;
+}
 
 const MIN_PREVIEW_WIDTH = 200;
 const MIN_PREVIEW_HEIGHT = 150;
@@ -73,9 +97,14 @@ export default class LinkPreviewPlugin extends Plugin {
     private activePreview?: {
         element: HTMLElement,
         cleanup: () => void,
-        link: HTMLElement
+        link: HTMLElement,
+        sourceKey?: string
     };
     private hoverTimeout?: number;
+    private pendingPreview?: {
+        hoverElement: HTMLElement,
+        sourceKey?: string
+    };
     private lastMouseX = 0;
     private lastMouseY = 0;
     private modifierState: ModifierKeyConfig = { meta: false, ctrl: false, alt: false, shift: false };
@@ -166,24 +195,13 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
-        const linkInfo = this.findLinkElement(target, event.relatedTarget as Element | null);
+        const relatedTarget = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+        const linkInfo = this.findLinkElement(target, relatedTarget, { x: event.clientX, y: event.clientY });
         if (!linkInfo) return;
 
-        const { element: linkElement, url } = linkInfo;
+        const { element: linkElement, hoverElement, sourceKey, url } = linkInfo;
 
-        // Clear any existing hover timeout
-        if (this.hoverTimeout) {
-            window.clearTimeout(this.hoverTimeout);
-        }
-
-        // Clear any existing stillness check
-        if (this.stillnessCheckTimeout) {
-            window.clearTimeout(this.stillnessCheckTimeout);
-            this.stillnessCheckTimeout = undefined;
-        }
-
-        // If hovering the same link that has an active preview, clear any pending cleanup
-        if (this.activePreview?.link === linkElement) {
+        if (this.isActivePreviewForLink(linkInfo)) {
             if (this.cleanupTimeout) {
                 window.clearTimeout(this.cleanupTimeout);
                 this.cleanupTimeout = undefined;
@@ -192,20 +210,37 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
+        if (this.isPendingPreviewForLink(linkInfo)) {
+            return;
+        }
+
+        // Clear any existing hover timeout
+        if (this.hoverTimeout) {
+            window.clearTimeout(this.hoverTimeout);
+            this.pendingPreview = undefined;
+        }
+
+        // Clear any existing stillness check
+        if (this.stillnessCheckTimeout) {
+            window.clearTimeout(this.stillnessCheckTimeout);
+            this.stillnessCheckTimeout = undefined;
+        }
+
         // Clean up any existing preview
         this.cleanupActivePreview();
 
         // Set timeout for showing preview
         this.showLoadingIndicator();
+        this.pendingPreview = { hoverElement, sourceKey };
         this.hoverTimeout = window.setTimeout(() => {
-            this.tryShowPreview(linkElement, url);
+            this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
         }, this.settings.hoverDelay);
 
         // Add mouse leave listener to target
         const handleMouseLeave = (e: MouseEvent) => {
             // Skip cleanup timer if sticky popup is enabled
             if (this.settings.stickyPopup) {
-                linkElement.removeEventListener('mouseleave', handleMouseLeave);
+                hoverElement.removeEventListener('mouseleave', handleMouseLeave);
                 return;
             }
 
@@ -217,20 +252,22 @@ export default class LinkPreviewPlugin extends Plugin {
             if (!this.activePreview && this.hoverTimeout) {
                 window.clearTimeout(this.hoverTimeout);
                 this.hoverTimeout = undefined;
+                this.pendingPreview = undefined;
                 this.removeLoadingIndicator();
             } else {
                 this.startCleanupTimer();
             }
-            linkElement.removeEventListener('mouseleave', handleMouseLeave);
+            hoverElement.removeEventListener('mouseleave', handleMouseLeave);
         };
 
-        linkElement.addEventListener('mouseleave', handleMouseLeave);
+        hoverElement.addEventListener('mouseleave', handleMouseLeave);
     }
 
-    private tryShowPreview(linkElement: HTMLElement, url: string) {
+    private tryShowPreview(linkElement: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         // If modifiers are required but no longer held, cancel
         if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
             this.removeLoadingIndicator();
+            this.pendingPreview = undefined;
             return;
         }
         // Check mouse stillness if delay is configured
@@ -240,17 +277,18 @@ export default class LinkPreviewPlugin extends Plugin {
                 // Mouse hasn't been still long enough, reschedule check
                 const remainingTime = this.settings.mouseStillnessDelay - timeSinceMovement;
                 this.stillnessCheckTimeout = window.setTimeout(() => {
-                    this.tryShowPreview(linkElement, url);
+                    this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
                 }, Math.min(remainingTime, 50)); // Poll at most every 50ms
                 return;
             }
         }
-        this.showPreview(linkElement, url);
+        this.showPreview(linkElement, url, hoverElement, sourceKey);
     }
 
-    private showPreview(link: HTMLElement, url: string) {
+    private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         this.removeLoadingIndicator();
         this.cleanupActivePreview();
+        this.pendingPreview = undefined;
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect);
 
@@ -312,7 +350,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (this.settings.stickyPopup) {
             clickOutsideHandler = (e: MouseEvent) => {
                 const target = e.target as Element;
-                if (!previewEl.contains(target) && !link.contains(target)) {
+                if (!previewEl.contains(target) && !hoverElement.contains(target)) {
                     this.cleanupActivePreview();
                 }
             };
@@ -336,7 +374,7 @@ export default class LinkPreviewPlugin extends Plugin {
         }
 
         document.body.appendChild(previewEl);
-        this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, link };
+        this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, link: hoverElement, sourceKey };
     }
 
     private cleanupTimeout?: number;
@@ -394,6 +432,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (this.hoverTimeout) {
             window.clearTimeout(this.hoverTimeout);
             this.hoverTimeout = undefined;
+            this.pendingPreview = undefined;
         }
         if (this.cleanupTimeout) {
             window.clearTimeout(this.cleanupTimeout);
@@ -453,15 +492,20 @@ export default class LinkPreviewPlugin extends Plugin {
         const elementUnderCursor = document.elementFromPoint(this.lastMouseX, this.lastMouseY);
         if (!elementUnderCursor) return;
 
-        const linkInfo = this.findLinkElement(elementUnderCursor, null);
+        const linkInfo = this.findLinkElement(elementUnderCursor, null, { x: this.lastMouseX, y: this.lastMouseY });
         if (linkInfo) {
             // Clear any existing timeout and show preview after delay
             if (this.hoverTimeout) {
                 window.clearTimeout(this.hoverTimeout);
+                this.pendingPreview = undefined;
             }
             this.showLoadingIndicator();
+            this.pendingPreview = {
+                hoverElement: linkInfo.hoverElement,
+                sourceKey: linkInfo.sourceKey,
+            };
             this.hoverTimeout = window.setTimeout(() => {
-                this.tryShowPreview(linkInfo.element, linkInfo.url);
+                this.tryShowPreview(linkInfo.element, linkInfo.url, linkInfo.hoverElement, linkInfo.sourceKey);
             }, this.settings.hoverDelay);
         }
     }
@@ -472,10 +516,12 @@ export default class LinkPreviewPlugin extends Plugin {
             if (this.hoverTimeout) {
                 window.clearTimeout(this.hoverTimeout);
                 this.hoverTimeout = undefined;
+                this.pendingPreview = undefined;
             }
             if (this.stillnessCheckTimeout) {
                 window.clearTimeout(this.stillnessCheckTimeout);
                 this.stillnessCheckTimeout = undefined;
+                this.pendingPreview = undefined;
             }
             this.removeLoadingIndicator();
 
@@ -731,7 +777,12 @@ export default class LinkPreviewPlugin extends Plugin {
         };
     }
 
-    private findLinkElement(target: Element, relatedTarget: Element | null): { element: HTMLElement, url: string } | null {
+    private findLinkElement(target: Element, relatedTarget: Element | null, point?: ScreenPoint): LinkInfo | null {
+        const editorLinkInfo = this.getEditorLinkInfo(target, point);
+        if (editorLinkInfo) {
+            return editorLinkInfo;
+        }
+
         const LINK_SELECTOR = 'a.external-link, a[href^="http"], span.external-link, .cm-hmd-external-link, .cm-link .cm-underline, .cm-url, [data-href], [data-url]';
 
         let el: Element | null = target;
@@ -750,20 +801,10 @@ export default class LinkPreviewPlugin extends Plugin {
                 return null;
             }
 
-            let url: string | null = null;
-
-            // In editor mode, use document search FIRST (DOM doesn't have URLs)
-            if (el.closest('.cm-editor')) {
-                url = this.getUrlFromEditorByText(el);
-            }
-
-            // Fallback to DOM extraction (works in Reader mode)
-            if (!url) {
-                url = this.extractUrlFromElement(el);
-            }
+            const url = this.extractUrlFromElement(el);
 
             if (url) {
-                return { element: el, url };
+                return { element: el, hoverElement: el, url };
             }
 
             el = el.parentElement;
@@ -772,31 +813,99 @@ export default class LinkPreviewPlugin extends Plugin {
         return null;
     }
 
-    private getUrlFromEditorByText(element: HTMLElement): string | null {
-        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (!view?.editor) return null;
+    private getEditorLinkInfo(target: Element, point?: ScreenPoint): LinkInfo | null {
+        if (!(target instanceof HTMLElement)) return null;
 
+        const editorElement = target.closest('.cm-editor');
+        if (!(editorElement instanceof HTMLElement)) return null;
+
+        const editorView = EditorView.findFromDOM(target) ?? EditorView.findFromDOM(editorElement);
+        if (!editorView) return null;
+
+        const content = editorView.state.doc.toString();
+        const hoverElement = this.getEditorHoverElement(target, editorElement);
+        const pointLink = point ? this.getMarkdownLinkAtPoint(editorView, content, point) : null;
+
+        if (pointLink) {
+            return {
+                element: target,
+                hoverElement,
+                sourceKey: this.getMarkdownLinkSourceKey(pointLink),
+                url: pointLink.url,
+            };
+        }
+
+        if (!this.isEditorLinkLikeElement(target)) {
+            return null;
+        }
+
+        const textLink = this.getMarkdownLinkByDisplayText(content, target);
+        if (textLink) {
+            return {
+                element: target,
+                hoverElement,
+                sourceKey: this.getMarkdownLinkSourceKey(textLink),
+                url: textLink.url,
+            };
+        }
+
+        return null;
+    }
+
+    private getEditorHoverElement(target: HTMLElement, editorElement: HTMLElement): HTMLElement {
+        const lineElement = target.closest('.cm-line');
+        if (lineElement instanceof HTMLElement) {
+            return lineElement;
+        }
+        return editorElement;
+    }
+
+    private isEditorLinkLikeElement(element: HTMLElement): boolean {
+        return Boolean(element.closest('.cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]'));
+    }
+
+    private getMarkdownLinkAtPoint(editorView: EditorView, content: string, point: ScreenPoint): ParsedMarkdownLink | null {
+        const offset = editorView.posAtCoords(point);
+        if (offset === null) return null;
+
+        const nearbyOffsets = [
+            offset,
+            Math.max(0, offset - 1),
+            Math.min(content.length, offset + 1),
+        ];
+        const links = this.parseMarkdownLinks(content);
+
+        for (const nearbyOffset of nearbyOffsets) {
+            const link = this.findParsedMarkdownLinkAtOffset(links, nearbyOffset);
+            if (link) return link;
+        }
+
+        for (const nearbyOffset of nearbyOffsets) {
+            const link = this.getBareMarkdownUrlAtOffset(content, nearbyOffset);
+            if (link) return link;
+        }
+
+        return null;
+    }
+
+    private getMarkdownLinkByDisplayText(content: string, element: HTMLElement): ParsedMarkdownLink | null {
         const displayText = element.textContent?.trim();
         if (!displayText) return null;
 
-        const content = view.editor.getValue();
-        const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
-        let match;
-        let substringMatch: string | null = null;
+        let substringMatch: ParsedMarkdownLink | null = null;
 
-        while ((match = linkRegex.exec(content)) !== null) {
-            const linkText = match[1];
-            const url = match[2];
+        for (const link of this.parseMarkdownLinks(content)) {
+            const linkText = link.text.trim();
 
             // Exact match — return immediately
             if (linkText === displayText) {
-                return url;
+                return link;
             }
 
             // Substring match — remember first one, but keep looking for exact
             if (!substringMatch &&
                 (linkText.includes(displayText) || displayText.includes(linkText))) {
-                substringMatch = url;
+                substringMatch = link;
             }
         }
 
@@ -805,12 +914,195 @@ export default class LinkPreviewPlugin extends Plugin {
             return substringMatch;
         }
 
-        // Bare URL fallback
-        if (displayText.startsWith('http')) {
-            return this.normalizeUrl(displayText);
+        return this.getBareMarkdownUrl(displayText);
+    }
+
+    private findParsedMarkdownLinkAtOffset(links: ParsedMarkdownLink[], offset: number): ParsedMarkdownLink | null {
+        for (const link of links) {
+            if (offset >= link.start && offset <= link.end) {
+                return link;
+            }
         }
 
         return null;
+    }
+
+    private parseMarkdownLinks(content: string): ParsedMarkdownLink[] {
+        const links: ParsedMarkdownLink[] = [];
+        let index = 0;
+
+        while (index < content.length) {
+            const start = content.indexOf('[', index);
+            if (start === -1) break;
+
+            if (start > 0 && content[start - 1] === '!') {
+                index = start + 1;
+                continue;
+            }
+
+            const textEnd = this.findClosingBracket(content, start);
+            if (textEnd === -1 || content[textEnd + 1] !== '(') {
+                index = start + 1;
+                continue;
+            }
+
+            const destinationStart = textEnd + 2;
+            const destinationEnd = this.findClosingParen(content, destinationStart);
+            if (destinationEnd === -1) {
+                index = start + 1;
+                continue;
+            }
+
+            const url = this.extractMarkdownDestination(content.slice(destinationStart, destinationEnd));
+            if (url) {
+                links.push({
+                    destinationEnd,
+                    destinationStart,
+                    end: destinationEnd + 1,
+                    start,
+                    text: content.slice(start + 1, textEnd),
+                    textEnd,
+                    textStart: start + 1,
+                    url,
+                });
+            }
+
+            index = destinationEnd + 1;
+        }
+
+        return links;
+    }
+
+    private findClosingBracket(content: string, start: number): number {
+        let depth = 0;
+
+        for (let index = start; index < content.length; index++) {
+            const char = content[index];
+
+            if (char === '\\') {
+                index++;
+                continue;
+            }
+
+            if (char === '[') {
+                depth++;
+            } else if (char === ']') {
+                depth--;
+                if (depth === 0) {
+                    return index;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    private findClosingParen(content: string, start: number): number {
+        let depth = 0;
+
+        for (let index = start; index < content.length; index++) {
+            const char = content[index];
+
+            if (char === '\\') {
+                index++;
+                continue;
+            }
+
+            if (char === '(') {
+                depth++;
+            } else if (char === ')') {
+                if (depth === 0) {
+                    return index;
+                }
+                depth--;
+            }
+        }
+
+        return -1;
+    }
+
+    private extractMarkdownDestination(destination: string): string | null {
+        const trimmed = destination.trim();
+        if (!trimmed) return null;
+
+        if (trimmed.startsWith('<')) {
+            const end = trimmed.indexOf('>');
+            if (end !== -1) {
+                return this.normalizeUrl(trimmed.slice(1, end));
+            }
+        }
+
+        return this.normalizeUrl(trimmed.split(/\s+/)[0]);
+    }
+
+    private getBareMarkdownUrl(displayText: string): ParsedMarkdownLink | null {
+        const url = this.normalizeUrl(displayText);
+        if (!url) return null;
+
+        return {
+            destinationEnd: displayText.length,
+            destinationStart: 0,
+            end: displayText.length,
+            start: 0,
+            text: displayText,
+            textEnd: displayText.length,
+            textStart: 0,
+            url,
+        };
+    }
+
+    private getBareMarkdownUrlAtOffset(content: string, offset: number): ParsedMarkdownLink | null {
+        const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
+        let match;
+
+        while ((match = urlRegex.exec(content)) !== null) {
+            const start = match.index;
+            const text = match[0];
+            const end = start + text.length;
+            if (offset < start || offset > end) continue;
+
+            const url = this.normalizeUrl(text);
+            if (!url) return null;
+
+            return {
+                destinationEnd: end,
+                destinationStart: start,
+                end,
+                start,
+                text,
+                textEnd: end,
+                textStart: start,
+                url,
+            };
+        }
+
+        return null;
+    }
+
+    private getMarkdownLinkSourceKey(link: ParsedMarkdownLink): string {
+        return `${link.start}:${link.end}:${link.url}`;
+    }
+
+    private isActivePreviewForLink(linkInfo: LinkInfo): boolean {
+        if (!this.activePreview) return false;
+        if (this.activePreview.link !== linkInfo.hoverElement) return false;
+
+        if (this.activePreview.sourceKey || linkInfo.sourceKey) {
+            return this.activePreview.sourceKey === linkInfo.sourceKey;
+        }
+
+        return true;
+    }
+
+    private isPendingPreviewForLink(linkInfo: LinkInfo): boolean {
+        if (!this.pendingPreview) return false;
+        if (this.pendingPreview.hoverElement !== linkInfo.hoverElement) return false;
+
+        if (this.pendingPreview.sourceKey || linkInfo.sourceKey) {
+            return this.pendingPreview.sourceKey === linkInfo.sourceKey;
+        }
+
+        return true;
     }
 
     private extractUrlFromElement(element: HTMLElement): string | null {
