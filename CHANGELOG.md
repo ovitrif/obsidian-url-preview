@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Preview controls now appear in a toolbar above the preview content instead of overlaying the iframe (#7)
+- Default settings now use a 1000ms hover delay, 1000ms mouse stillness delay, sticky popups, and no close-on-key-release while keeping Command as the default modifier on macOS and Ctrl on Windows/Linux
 
 ### Fixed
 
