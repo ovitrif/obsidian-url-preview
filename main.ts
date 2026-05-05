@@ -97,6 +97,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private activePreview?: {
         element: HTMLElement,
         cleanup: () => void,
+        doc: Document,
         link: HTMLElement,
         sourceKey?: string
     };
@@ -112,6 +113,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private stillnessCheckTimeout?: number;
     private activeResizeCleanup?: () => void;
     private loadingIndicator?: HTMLElement;
+    private handledDocuments = new Set<Document>();
 
     async onload() {
         await this.loadSettings();
@@ -126,6 +128,9 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private registerGlobalHandler() {
         const handleWindow = (doc: Document) => {
+            if (this.handledDocuments.has(doc)) return;
+            this.handledDocuments.add(doc);
+
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => this.handleLinkHover(e));
             this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
                 // Track mouse stillness - only update time if mouse moved significantly (>2px)
@@ -151,7 +156,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.updateModifierState(e);
                 // Handle modifier key press while hovering over link
                 if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
-                    this.handleModifierKeyDown();
+                    this.handleModifierKeyDown(doc);
                 }
             });
             this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
@@ -169,8 +174,20 @@ export default class LinkPreviewPlugin extends Plugin {
         };
 
         handleWindow(document);
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            handleWindow(leaf.view.containerEl.ownerDocument);
+        });
+
         this.registerEvent(
-            this.app.workspace.on('window-open', ({win}) => handleWindow(win.document))
+            this.app.workspace.on('window-open', (workspaceWindow) => handleWindow(workspaceWindow.doc))
+        );
+        this.registerEvent(
+            this.app.workspace.on('window-close', (workspaceWindow) => {
+                if (this.activePreview?.doc === workspaceWindow.doc) {
+                    this.cleanupActivePreview();
+                }
+                this.handledDocuments.delete(workspaceWindow.doc);
+            })
         );
     }
 
@@ -200,6 +217,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (!linkInfo) return;
 
         const { element: linkElement, hoverElement, sourceKey, url } = linkInfo;
+        const targetDoc = hoverElement.ownerDocument;
 
         if (this.isActivePreviewForLink(linkInfo)) {
             if (this.cleanupTimeout) {
@@ -230,7 +248,7 @@ export default class LinkPreviewPlugin extends Plugin {
         this.cleanupActivePreview();
 
         // Set timeout for showing preview
-        this.showLoadingIndicator();
+        this.showLoadingIndicator(targetDoc);
         this.pendingPreview = { hoverElement, sourceKey };
         this.hoverTimeout = window.setTimeout(() => {
             this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
@@ -289,8 +307,9 @@ export default class LinkPreviewPlugin extends Plugin {
         this.removeLoadingIndicator();
         this.cleanupActivePreview();
         this.pendingPreview = undefined;
+        const doc = link.ownerDocument;
         const rect = link.getBoundingClientRect();
-        const previewEl = this.createPreviewElement(rect);
+        const previewEl = this.createPreviewElement(rect, doc);
 
         if (this.settings.showOpenInBrowser || this.settings.showCloseButton) {
             this.createButtons(previewEl, url);
@@ -306,11 +325,8 @@ export default class LinkPreviewPlugin extends Plugin {
         const loading = previewEl.createDiv('preview-loading');
         loading.addClass('loading-spinner');
         
-        const iframe = createEl('iframe', {
-            attr: {
-                src: url
-            }
-        });
+        const iframe = doc.createElement('iframe');
+        iframe.setAttribute('src', url);
         
         wrapper.appendChild(iframe);
 
@@ -356,7 +372,7 @@ export default class LinkPreviewPlugin extends Plugin {
             };
             // Delay adding listener to avoid immediate trigger from the click that might have opened it
             setTimeout(() => {
-                document.addEventListener('click', clickOutsideHandler!);
+                doc.addEventListener('click', clickOutsideHandler!);
             }, 0);
         }
 
@@ -364,7 +380,7 @@ export default class LinkPreviewPlugin extends Plugin {
         const originalCleanup = cleanup;
         const cleanupWithClickHandler = () => {
             if (clickOutsideHandler) {
-                document.removeEventListener('click', clickOutsideHandler);
+                doc.removeEventListener('click', clickOutsideHandler);
             }
             originalCleanup();
         };
@@ -373,8 +389,8 @@ export default class LinkPreviewPlugin extends Plugin {
             this.createResizeHandles(previewEl);
         }
 
-        document.body.appendChild(previewEl);
-        this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, link: hoverElement, sourceKey };
+        doc.body.appendChild(previewEl);
+        this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
     }
 
     private cleanupTimeout?: number;
@@ -443,7 +459,7 @@ export default class LinkPreviewPlugin extends Plugin {
             this.stillnessCheckTimeout = undefined;
         }
         // Safety net: remove any orphaned preview popups
-        document.querySelectorAll('.hover-popup').forEach(el => el.remove());
+        this.removeOrphanedPreviews();
     }
 
     private isModifierKeyPressed(event: MouseEvent): boolean {
@@ -478,7 +494,7 @@ export default class LinkPreviewPlugin extends Plugin {
         return keys.meta || keys.ctrl || keys.alt || keys.shift;
     }
 
-    private handleModifierKeyDown() {
+    private handleModifierKeyDown(doc: Document) {
         // If already showing a preview, do nothing
         if (this.activePreview) return;
 
@@ -489,7 +505,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (Date.now() - this.lastMovementTime > 1500) return;
 
         // Find element under cursor
-        const elementUnderCursor = document.elementFromPoint(this.lastMouseX, this.lastMouseY);
+        const elementUnderCursor = doc.elementFromPoint(this.lastMouseX, this.lastMouseY);
         if (!elementUnderCursor) return;
 
         const linkInfo = this.findLinkElement(elementUnderCursor, null, { x: this.lastMouseX, y: this.lastMouseY });
@@ -499,7 +515,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 window.clearTimeout(this.hoverTimeout);
                 this.pendingPreview = undefined;
             }
-            this.showLoadingIndicator();
+            this.showLoadingIndicator(linkInfo.hoverElement.ownerDocument);
             this.pendingPreview = {
                 hoverElement: linkInfo.hoverElement,
                 sourceKey: linkInfo.sourceKey,
@@ -575,14 +591,21 @@ export default class LinkPreviewPlugin extends Plugin {
         this.cleanupActivePreview();
     }
 
-    private showLoadingIndicator() {
+    private removeOrphanedPreviews() {
+        for (const doc of this.handledDocuments) {
+            doc.querySelectorAll('.hover-popup').forEach(el => el.remove());
+        }
+    }
+
+    private showLoadingIndicator(doc: Document) {
         this.removeLoadingIndicator();
-        const el = createEl('div', { cls: 'preview-loading-cursor' });
+        const el = doc.createElement('div');
+        el.addClass('preview-loading-cursor');
         el.setCssStyles({
             left: `${this.lastMouseX + 12}px`,
             top: `${this.lastMouseY + 12}px`,
         });
-        document.body.appendChild(el);
+        doc.body.appendChild(el);
         this.loadingIndicator = el;
     }
 
@@ -591,12 +614,14 @@ export default class LinkPreviewPlugin extends Plugin {
         this.loadingIndicator = undefined;
     }
 
-    private createPreviewElement(rect: DOMRect): HTMLElement {
-        const el = createEl('div', { cls: 'hover-popup' });
+    private createPreviewElement(rect: DOMRect, doc: Document): HTMLElement {
+        const el = doc.createElement('div');
+        el.addClass('hover-popup');
+        const win = doc.defaultView ?? window;
         
         const windowSize = {
-            width: window.innerWidth,
-            height: window.innerHeight
+            width: win.innerWidth,
+            height: win.innerHeight
         };
         
         const bounds = this.calculatePreviewBounds(rect, windowSize);
@@ -613,6 +638,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private createButtons(container: HTMLElement, url: string) {
         const buttons = container.createDiv('preview-buttons');
+        const win = container.ownerDocument.defaultView ?? window;
 
         if (this.settings.showOpenInBrowser) {
             const openBtn = buttons.createEl('button', { cls: 'clickable-icon' });
@@ -620,7 +646,7 @@ export default class LinkPreviewPlugin extends Plugin {
             setTooltip(openBtn, 'Open in external browser');
             openBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                window.open(url);
+                win.open(url);
             });
         }
 
@@ -647,18 +673,21 @@ export default class LinkPreviewPlugin extends Plugin {
         e.stopPropagation();
 
         previewEl.addClass('is-resizing');
+        const doc = previewEl.ownerDocument;
+        const win = doc.defaultView ?? window;
 
         const startX = e.clientX;
         const startY = e.clientY;
         const initialRect = previewEl.getBoundingClientRect();
 
-        const indicator = createEl('div', { cls: 'resize-size-indicator' });
+        const indicator = doc.createElement('div');
+        indicator.addClass('resize-size-indicator');
         indicator.textContent = `${Math.round(initialRect.width)}\u00d7${Math.round(initialRect.height)}`;
         indicator.setCssStyles({
             left: `${e.clientX + 12}px`,
             top: `${e.clientY + 12}px`,
         });
-        document.body.appendChild(indicator);
+        doc.body.appendChild(indicator);
 
         const margin = 5;
 
@@ -689,11 +718,11 @@ export default class LinkPreviewPlugin extends Plugin {
             // Clamp to viewport
             newLeft = Math.max(margin, newLeft);
             newTop = Math.max(margin, newTop);
-            if (newLeft + newWidth > window.innerWidth - margin) {
-                newWidth = window.innerWidth - margin - newLeft;
+            if (newLeft + newWidth > win.innerWidth - margin) {
+                newWidth = win.innerWidth - margin - newLeft;
             }
-            if (newTop + newHeight > window.innerHeight - margin) {
-                newHeight = window.innerHeight - margin - newTop;
+            if (newTop + newHeight > win.innerHeight - margin) {
+                newHeight = win.innerHeight - margin - newTop;
             }
 
             previewEl.setCssStyles({
@@ -712,8 +741,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const onMouseUp = () => {
             previewEl.removeClass('is-resizing');
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
+            doc.removeEventListener('mousemove', onMouseMove);
+            doc.removeEventListener('mouseup', onMouseUp);
             indicator.remove();
             this.activeResizeCleanup = undefined;
 
@@ -727,13 +756,13 @@ export default class LinkPreviewPlugin extends Plugin {
 
         this.activeResizeCleanup = () => {
             previewEl.removeClass('is-resizing');
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
+            doc.removeEventListener('mousemove', onMouseMove);
+            doc.removeEventListener('mouseup', onMouseUp);
             indicator.remove();
         };
 
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
+        doc.addEventListener('mousemove', onMouseMove);
+        doc.addEventListener('mouseup', onMouseUp);
     }
 
     private calculatePreviewBounds(rect: DOMRect, windowSize: { width: number, height: number }): {
@@ -786,7 +815,8 @@ export default class LinkPreviewPlugin extends Plugin {
         const LINK_SELECTOR = 'a.external-link, a[href^="http"], span.external-link, .cm-hmd-external-link, .cm-link .cm-underline, .cm-url, [data-href], [data-url]';
 
         let el: Element | null = target;
-        while (el && el !== document.body) {
+        const body = target.ownerDocument.body;
+        while (el && el !== body) {
             if (!(el instanceof HTMLElement)) {
                 el = el.parentElement;
                 continue;
@@ -1121,7 +1151,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
         // For CodeMirror elements, look for ancestor anchor or external-link
         let ancestor: HTMLElement | null = element;
-        while (ancestor && ancestor !== document.body) {
+        const body = element.ownerDocument.body;
+        while (ancestor && ancestor !== body) {
             if (ancestor instanceof HTMLAnchorElement && ancestor.href) {
                 return this.normalizeUrl(ancestor.href);
             }
