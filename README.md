@@ -20,9 +20,12 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 - Preview controls live in a toolbar above the content, so they do not cover the page being previewed
 - Loading spinner near cursor during hover delay
 - Modifier-key press alone does not open previews; move the mouse slightly while still over the link
+- Hovered links show a small eye button that opens the preview directly
+- Bare GitHub URLs show a small GitHub button to convert them to Markdown links
 - Toolbar zoom controls remember zoom per domain
 - Toolbar buttons show bottom-positioned action tooltips
 - GitHub previews switch between sign-in and sign-out actions based on the detected GitHub session
+- Right-click an editor URL to convert it to a Markdown link using the page title
 - Smart keyboard trigger suppression while editing (prevents unwanted popups)
 - Pending preview auto-cancelled if modifier keys are released or mouse leaves link
 
@@ -50,6 +53,8 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 ## Usage
 
 Hold your modifier key (⌘ on Mac, Ctrl on Windows/Linux by default) and hover over any external link to see a preview.
+
+In Live Preview or source mode, right-click an external URL and choose **Convert URL to Markdown link** to replace it with `[page title](url)`.
 
 ## Authentication
 

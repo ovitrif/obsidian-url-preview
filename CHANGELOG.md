@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub auth button in the preview toolbar so GitHub auth can persist across live previews.
 - Bottom-positioned toolbar button tooltips.
 - Modifier-key press alone no longer opens previews; the cursor must move slightly while still over the link.
+- Inline eye button beside hovered links to open previews directly.
+- Inline GitHub button beside bare GitHub URLs to convert them to Markdown links.
+- Editor context menu action to convert external URLs to Markdown links using the page title.
 
 ### Changed
 
