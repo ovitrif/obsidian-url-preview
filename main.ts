@@ -99,7 +99,8 @@ const MIN_PREVIEW_WIDTH = 200;
 const MIN_PREVIEW_HEIGHT = 150;
 const INLINE_CONTROLS_GAP = 4;
 const INLINE_CONTROLS_SIZE = 16;
-const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 36;
+const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 120;
+const GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE = 10000;
 const MIN_PREVIEW_LOADING_MS = 750;
 const POST_LOAD_SPINNER_MS = 350;
 const TOOLBAR_TOOLTIP_OPTIONS = {
@@ -157,6 +158,7 @@ interface LinkPreviewSettings {
     stickyPopup: boolean;
     showOpenInBrowser: boolean;
     showCloseButton: boolean;
+    showGitHubPullRequestIds: boolean;
     allowResize: boolean;
     persistResize: boolean;
     domainZoomLevels: Record<string, number>;
@@ -182,6 +184,7 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'per
     stickyPopup: true,
     showOpenInBrowser: true,
     showCloseButton: true,
+    showGitHubPullRequestIds: true,
     allowResize: true,
     persistResize: false,
     domainZoomLevels: {},
@@ -205,6 +208,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private lastEditorContextLink?: EditorContextLink;
     private inlinePreviewControls = new Map<Document, InlinePreviewControlsState>();
     private githubPullRequestBadgeObservers = new Map<Document, GitHubPullRequestBadgeObserver>();
+    private githubPullRequestBadgeVersion = 0;
 
     async onload() {
         await this.loadSettings();
@@ -232,18 +236,23 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private createGitHubPullRequestBadgeExtension() {
         const buildDecorations = (view: EditorView) => this.buildGitHubPullRequestBadgeDecorations(view);
+        const getBadgeVersion = () => this.githubPullRequestBadgeVersion;
 
         return ViewPlugin.fromClass(
             class {
                 decorations: DecorationSet;
+                version: number;
 
                 constructor(view: EditorView) {
+                    this.version = getBadgeVersion();
                     this.decorations = buildDecorations(view);
                 }
 
                 update(update: ViewUpdate) {
-                    if (!update.docChanged && !update.viewportChanged) return;
+                    const version = getBadgeVersion();
+                    if (!update.docChanged && !update.viewportChanged && this.version === version) return;
 
+                    this.version = version;
                     this.decorations = buildDecorations(update.view);
                 }
             },
@@ -254,6 +263,8 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private buildGitHubPullRequestBadgeDecorations(view: EditorView): DecorationSet {
+        if (!this.settings.showGitHubPullRequestIds) return Decoration.none;
+
         const links = this.parseEditorLinks(view.state.doc.toString());
 
         return Decoration.set(
@@ -264,7 +275,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 const badgePosition = this.isBareMarkdownUrl(link) ? link.end : link.textEnd;
                 return [
                     Decoration.widget({
-                        side: 1,
+                        side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
                         widget: new GitHubPullRequestBadgeWidget(pullRequestId),
                     }).range(badgePosition),
                 ];
@@ -324,6 +335,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private registerGitHubPullRequestBadges(doc: Document) {
         if (this.githubPullRequestBadgeObservers.has(doc)) return;
 
+        this.syncGitHubPullRequestBadgeVisibility(doc);
         const observerState: GitHubPullRequestBadgeObserver = {
             observer: new MutationObserver(() => this.scheduleGitHubPullRequestBadgeUpdate(doc)),
             scheduled: false,
@@ -340,6 +352,7 @@ export default class LinkPreviewPlugin extends Plugin {
         observerState.observer.disconnect();
         this.githubPullRequestBadgeObservers.delete(doc);
         doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+        doc.body.removeClass('url-preview-hide-github-pr-badges');
     }
 
     private scheduleGitHubPullRequestBadgeUpdate(doc: Document) {
@@ -355,6 +368,11 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private updateGitHubPullRequestBadges(doc: Document) {
+        if (!this.settings.showGitHubPullRequestIds) {
+            doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+            return;
+        }
+
         const links = Array.from(doc.querySelectorAll('a[href]'));
         for (const link of links) {
             if (!(link instanceof HTMLAnchorElement)) continue;
@@ -408,6 +426,47 @@ export default class LinkPreviewPlugin extends Plugin {
         } catch {
             return null;
         }
+    }
+
+    async setShowGitHubPullRequestIds(value: boolean) {
+        this.settings.showGitHubPullRequestIds = value;
+        await this.saveSettings();
+        this.refreshGitHubPullRequestBadges();
+    }
+
+    private refreshGitHubPullRequestBadges() {
+        this.githubPullRequestBadgeVersion += 1;
+        for (const doc of this.handledDocuments) {
+            this.syncGitHubPullRequestBadgeVisibility(doc);
+            if (this.settings.showGitHubPullRequestIds) {
+                this.scheduleGitHubPullRequestBadgeUpdate(doc);
+            } else {
+                doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+            }
+            this.requestGitHubPullRequestBadgeDecorationUpdate(doc);
+        }
+    }
+
+    private syncGitHubPullRequestBadgeVisibility(doc: Document) {
+        if (this.settings.showGitHubPullRequestIds) {
+            doc.body.removeClass('url-preview-hide-github-pr-badges');
+        } else {
+            doc.body.addClass('url-preview-hide-github-pr-badges');
+        }
+    }
+
+    private requestGitHubPullRequestBadgeDecorationUpdate(doc: Document) {
+        const views = new Set<EditorView>();
+        doc.querySelectorAll('.cm-editor').forEach((editorElement) => {
+            if (!(editorElement instanceof HTMLElement)) return;
+
+            const editorView = EditorView.findFromDOM(editorElement);
+            if (editorView) {
+                views.add(editorView);
+            }
+        });
+
+        views.forEach((editorView) => editorView.dispatch({}));
     }
 
     private captureEditorContextMenuLink(event: MouseEvent) {
@@ -601,9 +660,12 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const rect = candidate.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return false;
-        if (rect.width > 24 || rect.height > 24) return false;
         if (rect.left < linkRect.right - 2) return false;
         if (rect.left > linkRect.right + INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH) return false;
+        if (candidate.classList.contains('url-preview-github-pr-badge')) {
+            return rect.width <= 80;
+        }
+        if (rect.width > 24 || rect.height > 24) return false;
 
         return true;
     }
@@ -2311,6 +2373,17 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     .onChange(async (value) => {
                         this.plugin.settings.showCloseButton = value;
                         await this.plugin.saveSettings();
+                    }));
+        });
+
+        behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Show GitHub pull request numbers')
+                .setDesc('Show #123 beside GitHub pull request links')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showGitHubPullRequestIds)
+                    .onChange(async (value) => {
+                        await this.plugin.setShowGitHubPullRequestIds(value);
                     }));
         });
 

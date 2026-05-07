@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline GitHub button beside bare GitHub URLs to convert them to Markdown links.
 - Editor context menu action to convert external URLs to Markdown links using the page title.
 - Subtle pull request number badges beside GitHub PR links in Live Preview and reading mode.
+- Setting to toggle GitHub pull request ID badges.
 
 ### Changed
 
@@ -24,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Previews now always load as live iframes instead of static snapshots so browser session cookies can apply.
 - GitHub auth button switches between sign-in and sign-out when desktop GitHub session cookies can be detected.
 - GitHub previews now use the actual preview width for zoom and responsive layout instead of a forced desktop viewport.
+- GitHub pull request ID badges now render after Obsidian's external-link icon.
 
 ### Removed
 

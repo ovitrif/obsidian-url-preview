@@ -96,14 +96,18 @@
 /* Rendered GitHub pull request number shown beside GitHub PR links */
 .url-preview-github-pr-badge {
     display: inline-block;
-    margin-left: 0.45em;
-    margin-right: 0.65em;
+    margin-left: 0.25em;
+    margin-right: 0.3em;
     color: var(--text-normal);
     font-size: inherit;
     line-height: inherit;
     opacity: 0.5;
     text-decoration: none;
     vertical-align: baseline;
+}
+
+.url-preview-hide-github-pr-badges .url-preview-github-pr-badge {
+    display: none;
 }
 
 .markdown-source-view:not(.is-live-preview) .url-preview-github-pr-badge {
