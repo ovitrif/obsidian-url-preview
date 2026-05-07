@@ -19,6 +19,10 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
   - Optionally persist resized dimensions across previews
 - Preview controls live in a toolbar above the content, so they do not cover the page being previewed
 - Loading spinner near cursor during hover delay
+- Modifier-key press alone does not open previews; move the mouse slightly while still over the link
+- Toolbar zoom controls remember zoom per domain
+- Toolbar buttons show bottom-positioned action tooltips
+- GitHub previews switch between sign-in and sign-out actions based on the detected GitHub session
 - Smart keyboard trigger suppression while editing (prevents unwanted popups)
 - Pending preview auto-cancelled if modifier keys are released or mouse leaves link
 
@@ -37,8 +41,8 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 - **Sticky Popup**: Keep preview open until ESC or click outside
 - **Show Open in Browser Button**: Show a button to open the URL in the default browser
 - **Show Close Button**: Show a button to close the preview popup
-- **Hover Delay**: How long to wait before showing the preview (in milliseconds)
-- **Mouse Stillness Delay**: Time the mouse must be stationary before showing preview
+- **Hover Delay**: How long to wait before showing the preview (500 ms by default)
+- **Mouse Stillness Delay**: Time the mouse must be stationary before showing preview (500 ms by default)
 - **Maximum Height / Width**: Maximum dimensions of the preview window (in pixels)
 - **Allow Resize**: Enable drag-to-resize on preview edges and corners
 - **Persist Resize**: Remember resized dimensions for future previews (with reset button)
@@ -46,6 +50,10 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 ## Usage
 
 Hold your modifier key (⌘ on Mac, Ctrl on Windows/Linux by default) and hover over any external link to see a preview.
+
+## Authentication
+
+Previews load live pages in an iframe instead of cached snapshots. If a site allows authentication inside Obsidian's embedded browser session, that login can be reused by later previews for the same site. GitHub previews use Obsidian's desktop Electron cookies to switch the toolbar action between "Sign in to GitHub" and "Sign out of GitHub" when that state can be detected.
 
 ## Limitations
 

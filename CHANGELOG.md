@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Toolbar zoom controls with hidden per-domain zoom persistence.
+- GitHub auth button in the preview toolbar so GitHub auth can persist across live previews.
+- Bottom-positioned toolbar button tooltips.
+- Modifier-key press alone no longer opens previews; the cursor must move slightly while still over the link.
+
+### Changed
+
+- Default hover delay and mouse stillness delay are now 500ms.
+- Refined toolbar zoom controls with the zoom-out button next to the input, a reset icon, and a muted percent suffix.
+- Previews now always load as live iframes instead of static snapshots so browser session cookies can apply.
+- GitHub auth button switches between sign-in and sign-out when desktop GitHub session cookies can be detected.
+- GitHub previews now use the actual preview width for zoom and responsive layout instead of a forced desktop viewport.
+
+### Removed
+
+- Static page snapshot cache and image cache support.
+
+### Fixed
+
+- Removed GitHub-specific iframe cropping that could create extra blank space above pull request titles.
+
 ## [0.5.0] - 2026-05-05
 
 ### Added
