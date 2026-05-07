@@ -81,6 +81,11 @@ interface ElectronModule {
 
 const MIN_PREVIEW_WIDTH = 200;
 const MIN_PREVIEW_HEIGHT = 150;
+const INLINE_CONTROLS_GAP = 4;
+const INLINE_CONTROLS_SIZE = 16;
+const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 36;
+const MIN_PREVIEW_LOADING_MS = 750;
+const POST_LOAD_SPINNER_MS = 350;
 const TOOLBAR_TOOLTIP_OPTIONS = {
     classes: ['url-preview-toolbar-tooltip'],
     delay: 250,
@@ -275,7 +280,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const doc = target.ownerDocument;
         const state = this.inlinePreviewControls.get(doc);
-        if (state?.container.contains(target)) {
+        const point = { x: event.clientX, y: event.clientY };
+        if (state?.container.contains(target) || (state && this.isPointInInlineControlsHoverZone(state, point))) {
             return;
         }
 
@@ -284,18 +290,18 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
-        const linkInfo = this.findLinkElement(target, null, { x: event.clientX, y: event.clientY });
+        const linkInfo = this.findLinkElement(target, null, point);
         if (!linkInfo) {
             this.hideInlinePreviewControls(doc);
             return;
         }
 
-        this.showInlinePreviewControls(doc, linkInfo, { x: event.clientX, y: event.clientY });
+        this.showInlinePreviewControls(doc, linkInfo, point);
     }
 
     private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
         const state = this.getInlinePreviewControls(doc);
-        const iconPosition = this.getInlinePreviewControlsPosition(linkInfo.element, point);
+        const iconPosition = this.getInlinePreviewControlsPosition(linkInfo.element, point, state.container);
         if (!iconPosition) {
             this.hideInlinePreviewControls(doc);
             return;
@@ -371,16 +377,76 @@ export default class LinkPreviewPlugin extends Plugin {
         return state;
     }
 
-    private getInlinePreviewControlsPosition(element: HTMLElement, point: ScreenPoint): { left: number; top: number } | null {
+    private getInlinePreviewControlsPosition(
+        element: HTMLElement,
+        point: ScreenPoint,
+        controlsEl: HTMLElement
+    ): { left: number; top: number } | null {
         const rect = this.getClientRectForPoint(element, point);
         if (!rect) return null;
 
-        const controlSize = 16;
-        const iconGap = 4;
+        const adornmentRight = this.getExternalLinkAdornmentRight(element, rect, controlsEl);
         return {
-            left: rect.right + iconGap,
-            top: rect.top + (rect.height - controlSize) / 2,
+            left: adornmentRight + INLINE_CONTROLS_GAP,
+            top: rect.top + (rect.height - INLINE_CONTROLS_SIZE) / 2,
         };
+    }
+
+    private getExternalLinkAdornmentRight(element: HTMLElement, rect: DOMRect, controlsEl: HTMLElement): number {
+        const doc = element.ownerDocument;
+        const probeY = rect.top + rect.height / 2;
+        let right = rect.right;
+
+        for (let offset = 1; offset <= INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH; offset += 4) {
+            const elements = doc.elementsFromPoint(rect.right + offset, probeY);
+            const adornment = elements.find((candidate) =>
+                this.isExternalLinkAdornmentCandidate(candidate, element, controlsEl, rect)
+            );
+            if (!adornment) continue;
+
+            const adornmentRect = adornment.getBoundingClientRect();
+            right = Math.max(right, adornmentRect.right);
+        }
+
+        return right;
+    }
+
+    private isExternalLinkAdornmentCandidate(
+        candidate: Element,
+        linkElement: HTMLElement,
+        controlsEl: HTMLElement,
+        linkRect: DOMRect
+    ): boolean {
+        if (candidate === linkElement ||
+            linkElement.contains(candidate) ||
+            candidate === controlsEl ||
+            controlsEl.contains(candidate) ||
+            candidate === linkElement.ownerDocument.body) {
+            return false;
+        }
+
+        const rect = candidate.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        if (rect.width > 24 || rect.height > 24) return false;
+        if (rect.left < linkRect.right - 2) return false;
+        if (rect.left > linkRect.right + INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH) return false;
+
+        return true;
+    }
+
+    private isPointInInlineControlsHoverZone(state: InlinePreviewControlsState, point: ScreenPoint): boolean {
+        if (!state.target) return false;
+
+        const linkRect = this.getClientRectForPoint(state.target.element, point);
+        const controlsRect = state.container.getBoundingClientRect();
+        if (!linkRect || controlsRect.width === 0 || controlsRect.height === 0) return false;
+
+        const top = Math.min(linkRect.top, controlsRect.top) - INLINE_CONTROLS_GAP;
+        const bottom = Math.max(linkRect.bottom, controlsRect.bottom) + INLINE_CONTROLS_GAP;
+        const left = Math.min(linkRect.right, controlsRect.left) - INLINE_CONTROLS_GAP;
+        const right = controlsRect.right + INLINE_CONTROLS_GAP;
+
+        return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
     }
 
     private canInlineConvertGitHubUrl(linkInfo: LinkInfo): boolean {
@@ -701,6 +767,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const loading = previewEl.createDiv('preview-loading');
         loading.addClass('loading-spinner');
+        const loadingStartedAt = Date.now();
 
         const cleanup = () => {
             previewEl.remove();
@@ -710,11 +777,7 @@ export default class LinkPreviewPlugin extends Plugin {
         const iframe = doc.createElement('iframe');
 
         iframe.onload = () => {
-            // Small delay to let page render before showing
-            setTimeout(() => {
-                iframe.addClass('is-loaded');
-                loading.remove();  // Remove entirely to stop infinite animation
-            }, 50);
+            this.revealLoadedIframe(iframe, loading, loadingStartedAt);
             if (this.isGitHubUrl(url)) {
                 void this.updateGitHubAuthControls(previewEl);
             }
@@ -772,6 +835,20 @@ export default class LinkPreviewPlugin extends Plugin {
         this.applyPreviewViewportProps(previewEl, url);
         this.loadPreviewIframe(iframe, url);
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
+    }
+
+    private revealLoadedIframe(iframe: HTMLIFrameElement, loading: HTMLElement, loadingStartedAt: number) {
+        const win = iframe.ownerDocument.defaultView ?? window;
+        win.requestAnimationFrame(() => {
+            win.requestAnimationFrame(() => {
+                iframe.addClass('is-loaded');
+                const elapsed = Date.now() - loadingStartedAt;
+                const remainingMinimum = Math.max(0, MIN_PREVIEW_LOADING_MS - elapsed);
+                win.setTimeout(() => {
+                    loading.remove();
+                }, Math.max(remainingMinimum, POST_LOAD_SPINNER_MS));
+            });
+        });
     }
 
     private cleanupTimeout?: number;
