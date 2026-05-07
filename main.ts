@@ -273,7 +273,14 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (!pullRequestId) return [];
 
                 const badgePosition = this.isBareMarkdownUrl(link) ? link.end : link.textEnd;
+                const label = `Pull request #${pullRequestId}`;
                 return [
+                    Decoration.mark({
+                        attributes: {
+                            'aria-label': label,
+                            'class': 'url-preview-github-pr-link-tooltip',
+                        },
+                    }).range(link.textStart, link.textEnd),
                     Decoration.widget({
                         side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
                         widget: new GitHubPullRequestBadgeWidget(pullRequestId),
