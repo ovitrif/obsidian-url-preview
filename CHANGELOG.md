@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline eye button beside hovered links to open previews directly.
 - Inline GitHub button beside bare GitHub URLs to convert them to Markdown links.
 - Editor context menu action to convert external URLs to Markdown links using the page title.
+- Subtle pull request number badges beside GitHub PR links in Live Preview and reading mode.
 
 ### Changed
 

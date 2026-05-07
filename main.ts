@@ -1,4 +1,10 @@
-import { EditorView } from '@codemirror/view';
+import {
+    Decoration,
+    EditorView,
+    ViewPlugin,
+    WidgetType,
+} from '@codemirror/view';
+import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import {
     App,
     Editor,
@@ -49,11 +55,21 @@ interface EditorContextLink {
     timestamp: number;
 }
 
+interface TextRange {
+    end: number;
+    start: number;
+}
+
 interface InlinePreviewControlsState {
     container: HTMLElement;
     githubConvertButton: HTMLElement;
     previewButton: HTMLElement;
     target?: LinkInfo;
+}
+
+interface GitHubPullRequestBadgeObserver {
+    observer: MutationObserver;
+    scheduled: boolean;
 }
 
 type GitHubAuthState = 'signed-in' | 'signed-out' | 'unknown';
@@ -104,6 +120,28 @@ const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
     { direction: 'sw', cls: 'resize-handle-sw' },
     { direction: 'se', cls: 'resize-handle-se' },
 ];
+
+class GitHubPullRequestBadgeWidget extends WidgetType {
+    constructor(private readonly pullRequestId: string) {
+        super();
+    }
+
+    eq(other: GitHubPullRequestBadgeWidget): boolean {
+        return this.pullRequestId === other.pullRequestId;
+    }
+
+    toDOM(view: EditorView): HTMLElement {
+        const badge = view.dom.ownerDocument.createElement('span');
+        badge.addClass('url-preview-github-pr-badge');
+        badge.textContent = `#${this.pullRequestId}`;
+        badge.setAttr('aria-label', `Pull request #${this.pullRequestId}`);
+        return badge;
+    }
+
+    ignoreEvent(): boolean {
+        return true;
+    }
+}
 
 interface ModifierKeyConfig {
     meta: boolean;
@@ -166,6 +204,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private convertLinkMenus = new WeakSet<Menu>();
     private lastEditorContextLink?: EditorContextLink;
     private inlinePreviewControls = new Map<Document, InlinePreviewControlsState>();
+    private githubPullRequestBadgeObservers = new Map<Document, GitHubPullRequestBadgeObserver>();
 
     async onload() {
         await this.loadSettings();
@@ -186,8 +225,52 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.addConvertToMarkdownLinkMenuItemForUrl(menu, url);
             })
         );
+        this.registerEditorExtension(this.createGitHubPullRequestBadgeExtension());
         
         this.addSettingTab(new LinkPreviewSettingTab(this.app, this));
+    }
+
+    private createGitHubPullRequestBadgeExtension() {
+        const buildDecorations = (view: EditorView) => this.buildGitHubPullRequestBadgeDecorations(view);
+
+        return ViewPlugin.fromClass(
+            class {
+                decorations: DecorationSet;
+
+                constructor(view: EditorView) {
+                    this.decorations = buildDecorations(view);
+                }
+
+                update(update: ViewUpdate) {
+                    if (!update.docChanged && !update.viewportChanged) return;
+
+                    this.decorations = buildDecorations(update.view);
+                }
+            },
+            {
+                decorations: (value) => value.decorations,
+            }
+        );
+    }
+
+    private buildGitHubPullRequestBadgeDecorations(view: EditorView): DecorationSet {
+        const links = this.parseEditorLinks(view.state.doc.toString());
+
+        return Decoration.set(
+            links.flatMap((link) => {
+                const pullRequestId = this.getGitHubPullRequestId(link.url);
+                if (!pullRequestId) return [];
+
+                const badgePosition = this.isBareMarkdownUrl(link) ? link.end : link.textEnd;
+                return [
+                    Decoration.widget({
+                        side: 1,
+                        widget: new GitHubPullRequestBadgeWidget(pullRequestId),
+                    }).range(badgePosition),
+                ];
+            }),
+            true
+        );
     }
 
     private registerGlobalHandler() {
@@ -215,6 +298,7 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.cleanupActivePreview();
                 }
             });
+            this.registerGitHubPullRequestBadges(doc);
         };
 
         handleWindow(document);
@@ -231,9 +315,99 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.cleanupActivePreview();
                 }
                 this.removeInlinePreviewControls(workspaceWindow.doc);
+                this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
         );
+    }
+
+    private registerGitHubPullRequestBadges(doc: Document) {
+        if (this.githubPullRequestBadgeObservers.has(doc)) return;
+
+        const observerState: GitHubPullRequestBadgeObserver = {
+            observer: new MutationObserver(() => this.scheduleGitHubPullRequestBadgeUpdate(doc)),
+            scheduled: false,
+        };
+        this.githubPullRequestBadgeObservers.set(doc, observerState);
+        observerState.observer.observe(doc.body, { childList: true, subtree: true });
+        this.scheduleGitHubPullRequestBadgeUpdate(doc);
+    }
+
+    private unregisterGitHubPullRequestBadges(doc: Document) {
+        const observerState = this.githubPullRequestBadgeObservers.get(doc);
+        if (!observerState) return;
+
+        observerState.observer.disconnect();
+        this.githubPullRequestBadgeObservers.delete(doc);
+        doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+    }
+
+    private scheduleGitHubPullRequestBadgeUpdate(doc: Document) {
+        const observerState = this.githubPullRequestBadgeObservers.get(doc);
+        if (!observerState || observerState.scheduled) return;
+
+        observerState.scheduled = true;
+        const win = doc.defaultView ?? window;
+        win.requestAnimationFrame(() => {
+            observerState.scheduled = false;
+            this.updateGitHubPullRequestBadges(doc);
+        });
+    }
+
+    private updateGitHubPullRequestBadges(doc: Document) {
+        const links = Array.from(doc.querySelectorAll('a[href]'));
+        for (const link of links) {
+            if (!(link instanceof HTMLAnchorElement)) continue;
+            if (link.closest('.hover-popup, .url-preview-inline-controls, .cm-editor')) continue;
+
+            const pullRequestId = this.getGitHubPullRequestId(link.href);
+            if (!pullRequestId) {
+                this.removeGitHubPullRequestBadge(link);
+                continue;
+            }
+
+            this.upsertGitHubPullRequestBadge(link, pullRequestId);
+        }
+    }
+
+    private upsertGitHubPullRequestBadge(link: HTMLAnchorElement, pullRequestId: string) {
+        link.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+
+        const nextElement = link.nextElementSibling;
+        const existingBadge = nextElement?.classList.contains('url-preview-github-pr-badge') ? nextElement : null;
+        if (existingBadge instanceof HTMLElement) {
+            if (existingBadge.textContent !== `#${pullRequestId}`) {
+                existingBadge.textContent = `#${pullRequestId}`;
+                existingBadge.setAttr('aria-label', `Pull request #${pullRequestId}`);
+            }
+            return;
+        }
+
+        const badge = link.ownerDocument.createElement('span');
+        badge.addClass('url-preview-github-pr-badge');
+        badge.textContent = `#${pullRequestId}`;
+        badge.setAttr('aria-label', `Pull request #${pullRequestId}`);
+        link.parentElement?.insertBefore(badge, link.nextSibling);
+    }
+
+    private removeGitHubPullRequestBadge(link: HTMLAnchorElement) {
+        link.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+        const nextElement = link.nextElementSibling;
+        if (nextElement?.classList.contains('url-preview-github-pr-badge')) {
+            nextElement.remove();
+        }
+    }
+
+    private getGitHubPullRequestId(url: string): string | null {
+        try {
+            const parsedUrl = new URL(url);
+            if (parsedUrl.hostname !== 'github.com') return null;
+
+            const match = parsedUrl.pathname.match(/^\/[^/]+\/[^/]+\/pull\/(\d+)(?:\/|$)/);
+            return match?.[1] ?? null;
+        } catch {
+            return null;
+        }
     }
 
     private captureEditorContextMenuLink(event: MouseEvent) {
@@ -330,9 +504,9 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const githubConvertButton = container.createEl('button', { cls: 'url-preview-inline-button is-hidden' });
         githubConvertButton.setAttr('type', 'button');
-        githubConvertButton.setAttr('aria-label', 'Convert GitHub URL to Markdown link');
+        githubConvertButton.setAttr('aria-label', 'Convert to Markdown link');
         setIcon(githubConvertButton, 'github');
-        setTooltip(githubConvertButton, 'Convert GitHub URL to Markdown link', TOOLBAR_TOOLTIP_OPTIONS);
+        setTooltip(githubConvertButton, 'Convert to Markdown link', TOOLBAR_TOOLTIP_OPTIONS);
 
         githubConvertButton.addEventListener('click', (event) => {
             event.preventDefault();
@@ -994,6 +1168,9 @@ export default class LinkPreviewPlugin extends Plugin {
         this.cleanupActivePreview();
         for (const doc of this.inlinePreviewControls.keys()) {
             this.removeInlinePreviewControls(doc);
+        }
+        for (const doc of this.githubPullRequestBadgeObservers.keys()) {
+            this.unregisterGitHubPullRequestBadges(doc);
         }
     }
 
@@ -1733,6 +1910,34 @@ export default class LinkPreviewPlugin extends Plugin {
         return links;
     }
 
+    private parseEditorLinks(content: string): ParsedMarkdownLink[] {
+        const markdownLinks = this.parseMarkdownLinks(content);
+        return [
+            ...markdownLinks,
+            ...this.parseBareMarkdownUrls(content, markdownLinks),
+        ];
+    }
+
+    private parseBareMarkdownUrls(content: string, excludedRanges: TextRange[] = []): ParsedMarkdownLink[] {
+        const links: ParsedMarkdownLink[] = [];
+        const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
+        let match: RegExpExecArray | null;
+
+        while ((match = urlRegex.exec(content)) !== null) {
+            const start = match.index;
+            const text = match[0];
+            const end = start + text.length;
+            if (excludedRanges.some((range) => start >= range.start && end <= range.end)) continue;
+
+            const url = this.normalizeUrl(text);
+            if (!url) continue;
+
+            links.push(this.createBareMarkdownUrlLink(start, end, text, url));
+        }
+
+        return links;
+    }
+
     private findClosingBracket(content: string, start: number): number {
         let depth = 0;
 
@@ -1803,19 +2008,11 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private getBareMarkdownUrlAtOffset(content: string, offset: number): ParsedMarkdownLink | null {
-        const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
-        let match;
-
-        while ((match = urlRegex.exec(content)) !== null) {
-            const start = match.index;
-            const text = match[0];
-            const end = start + text.length;
+        for (const link of this.parseBareMarkdownUrls(content)) {
+            const { end, start } = link;
             if (offset < start || offset > end) continue;
 
-            const url = this.normalizeUrl(text);
-            if (!url) return null;
-
-            return this.createBareMarkdownUrlLink(start, end, text, url);
+            return link;
         }
 
         return null;
