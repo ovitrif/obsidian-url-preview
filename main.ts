@@ -8,7 +8,6 @@ import {
     Platform,
     Plugin,
     PluginSettingTab,
-    Setting,
     SettingGroup,
     normalizePath,
     requestUrl,
@@ -111,11 +110,7 @@ interface ModifierKeyConfig {
 interface LinkPreviewSettings {
     maxPreviewHeight: number;
     maxPreviewWidth: number;
-    hoverDelay: number;
-    requireModifierKey: boolean;
     modifierKeys: ModifierKeyConfig;
-    closeOnModifierRelease: boolean;
-    mouseStillnessDelay: number;
     stickyPopup: boolean;
     showOpenInBrowser: boolean;
     showCloseButton: boolean;
@@ -141,10 +136,6 @@ const DEFAULT_MODIFIER_KEYS: ModifierKeyConfig = {
 const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'persistedWidth' | 'persistedHeight'>> = {
     maxPreviewHeight: 960,
     maxPreviewWidth: 720,
-    hoverDelay: 500,
-    requireModifierKey: true,
-    closeOnModifierRelease: false,
-    mouseStillnessDelay: 500,
     stickyPopup: true,
     showOpenInBrowser: true,
     showCloseButton: true,
@@ -163,18 +154,9 @@ export default class LinkPreviewPlugin extends Plugin {
         link: HTMLElement,
         sourceKey?: string
     };
-    private hoverTimeout?: number;
-    private pendingPreview?: {
-        hoverElement: HTMLElement,
-        sourceKey?: string
-    };
     private lastMouseX = 0;
     private lastMouseY = 0;
-    private modifierState: ModifierKeyConfig = { meta: false, ctrl: false, alt: false, shift: false };
-    private lastMovementTime = 0;
-    private stillnessCheckTimeout?: number;
     private activeResizeCleanup?: () => void;
-    private loadingIndicator?: HTMLElement;
     private handledDocuments = new Set<Document>();
     private convertLinkMenus = new WeakSet<Menu>();
     private lastEditorContextLink?: EditorContextLink;
@@ -210,48 +192,23 @@ export default class LinkPreviewPlugin extends Plugin {
 
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.updateInlinePreviewButton(e);
-                this.handleLinkHover(e);
             });
             this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
+            this.registerDomEvent(doc, 'click', (e: MouseEvent) => this.handleLinkClick(e), { capture: true });
             this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
-                // Track mouse stillness - only update time if mouse moved significantly.
                 const dx = Math.abs(e.clientX - this.lastMouseX);
                 const dy = Math.abs(e.clientY - this.lastMouseY);
                 const didMouseMove = dx > 0 || dy > 0;
-                if (dx > 2 || dy > 2) {
-                    this.lastMovementTime = Date.now();
-                }
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
                 if (didMouseMove) {
                     this.updateInlinePreviewButton(e);
-                    this.handleModifierMouseMove(e);
-                }
-                if (this.loadingIndicator) {
-                    this.loadingIndicator.setCssStyles({
-                        left: `${e.clientX + 12}px`,
-                        top: `${e.clientY + 12}px`,
-                    });
                 }
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
                 }
-                // Update modifier state
-                this.updateModifierState(e);
-            });
-            this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
-                // Update modifier state
-                this.updateModifierState(e);
-                // Close preview when any required modifier key is released
-                if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
-                    this.handleModifierKeyUp();
-                }
-            });
-            // Reset modifier state on window blur
-            this.registerDomEvent(doc.defaultView ?? window, 'blur', () => {
-                this.modifierState = { meta: false, ctrl: false, alt: false, shift: false };
             });
         };
 
@@ -696,159 +653,39 @@ export default class LinkPreviewPlugin extends Plugin {
         return `[${this.escapeMarkdownLinkText(title)}](${this.formatMarkdownDestination(url)})`;
     }
 
-    private updateModifierState(e: KeyboardEvent) {
-        this.modifierState.meta = e.metaKey;
-        this.modifierState.ctrl = e.ctrlKey;
-        this.modifierState.alt = e.altKey;
-        this.modifierState.shift = e.shiftKey;
+    private handleLinkClick(event: MouseEvent) {
+        if (!this.areClickModifiersPressed(event)) return;
 
-        if (e.type === 'keydown') {
-            if (e.key === 'Meta') this.modifierState.meta = true;
-            if (e.key === 'Control') this.modifierState.ctrl = true;
-            if (e.key === 'Alt') this.modifierState.alt = true;
-            if (e.key === 'Shift') this.modifierState.shift = true;
-        }
-    }
-
-    private mergeModifierStateFromMouse(e: MouseEvent) {
-        this.modifierState.meta = this.modifierState.meta || e.metaKey;
-        this.modifierState.ctrl = this.modifierState.ctrl || e.ctrlKey;
-        this.modifierState.alt = this.modifierState.alt || e.altKey;
-        this.modifierState.shift = this.modifierState.shift || e.shiftKey;
-    }
-
-    private handleLinkHover(event: MouseEvent) {
-        this.mergeModifierStateFromMouse(event);
         const target = event.target;
-        if (!(target instanceof Element)) return;
-
-        // Skip if event is from inside the active preview (prevents flickering)
-        if (this.activePreview?.element.contains(target)) {
-            return;
-        }
-
-        // Check for modifier key requirement
-        if (this.settings.requireModifierKey && !this.isModifierIntentActive(event)) {
-            return;
-        }
-
-        const relatedTarget = event.relatedTarget instanceof Element ? event.relatedTarget : null;
-        const linkInfo = this.findLinkElement(target, relatedTarget, { x: event.clientX, y: event.clientY });
-        if (!linkInfo) return;
-
-        this.startPreviewForLink(linkInfo);
-    }
-
-    private handleModifierMouseMove(event: MouseEvent) {
-        this.mergeModifierStateFromMouse(event);
-        if (!this.settings.requireModifierKey || !this.isModifierIntentActive(event)) return;
-
-        const target = event.view?.document.elementFromPoint(event.clientX, event.clientY) ??
-            event.target;
         if (!(target instanceof Element)) return;
         if (this.activePreview?.element.contains(target)) return;
 
         const linkInfo = this.findLinkElement(target, null, { x: event.clientX, y: event.clientY });
         if (!linkInfo) return;
 
-        this.startPreviewForLink(linkInfo);
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        this.openPreviewForLink(linkInfo);
     }
 
-    private startPreviewForLink(linkInfo: LinkInfo) {
+    private openPreviewForLink(linkInfo: LinkInfo) {
         if (this.isActivePreviewForLink(linkInfo)) {
             if (this.cleanupTimeout) {
                 window.clearTimeout(this.cleanupTimeout);
                 this.cleanupTimeout = undefined;
             }
-            this.removeLoadingIndicator();
             return;
         }
 
-        if (this.isPendingPreviewForLink(linkInfo)) {
-            return;
-        }
-
-        // Clear any existing hover timeout
-        if (this.hoverTimeout) {
-            window.clearTimeout(this.hoverTimeout);
-            this.pendingPreview = undefined;
-        }
-
-        // Clear any existing stillness check
-        if (this.stillnessCheckTimeout) {
-            window.clearTimeout(this.stillnessCheckTimeout);
-            this.stillnessCheckTimeout = undefined;
-        }
-
-        // Clean up any existing preview
         this.cleanupActivePreview();
 
         const { element: linkElement, hoverElement, sourceKey, url } = linkInfo;
-        const targetDoc = hoverElement.ownerDocument;
-        const previewDelay = this.settings.hoverDelay;
-
-        // Set timeout for showing preview
-        if (previewDelay > 150) {
-            this.showLoadingIndicator(targetDoc);
-        }
-        this.pendingPreview = { hoverElement, sourceKey };
-        this.hoverTimeout = window.setTimeout(() => {
-            this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
-        }, previewDelay);
-
-        // Add mouse leave listener to target
-        const handleMouseLeave = (e: MouseEvent) => {
-            // Skip cleanup timer if sticky popup is enabled
-            if (this.settings.stickyPopup) {
-                hoverElement.removeEventListener('mouseleave', handleMouseLeave);
-                return;
-            }
-
-            // Check if mouse moved to the preview
-            const toElement = e.relatedTarget as HTMLElement | null;
-            if (toElement && this.activePreview?.element.contains(toElement)) return;
-
-            // If preview hasn't shown yet, cancel the pending load
-            if (!this.activePreview && this.hoverTimeout) {
-                window.clearTimeout(this.hoverTimeout);
-                this.hoverTimeout = undefined;
-                this.pendingPreview = undefined;
-                this.removeLoadingIndicator();
-            } else {
-                this.startCleanupTimer();
-            }
-            hoverElement.removeEventListener('mouseleave', handleMouseLeave);
-        };
-
-        hoverElement.addEventListener('mouseleave', handleMouseLeave);
-    }
-
-    private tryShowPreview(linkElement: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
-        // If modifiers are required but no longer held, cancel
-        if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
-            this.removeLoadingIndicator();
-            this.pendingPreview = undefined;
-            return;
-        }
-        // Check mouse stillness if delay is configured
-        if (this.settings.mouseStillnessDelay > 0) {
-            const timeSinceMovement = Date.now() - this.lastMovementTime;
-            if (timeSinceMovement < this.settings.mouseStillnessDelay) {
-                // Mouse hasn't been still long enough, reschedule check
-                const remainingTime = this.settings.mouseStillnessDelay - timeSinceMovement;
-                this.stillnessCheckTimeout = window.setTimeout(() => {
-                    this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
-                }, Math.min(remainingTime, 50)); // Poll at most every 50ms
-                return;
-            }
-        }
         this.showPreview(linkElement, url, hoverElement, sourceKey);
     }
 
     private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
-        this.removeLoadingIndicator();
         this.cleanupActivePreview();
-        this.pendingPreview = undefined;
         const doc = link.ownerDocument;
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect, doc);
@@ -980,7 +817,6 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private cleanupActivePreview() {
-        this.removeLoadingIndicator();
         if (this.activeResizeCleanup) {
             this.activeResizeCleanup();
             this.activeResizeCleanup = undefined;
@@ -989,79 +825,25 @@ export default class LinkPreviewPlugin extends Plugin {
             this.activePreview.cleanup();
             this.activePreview = undefined;
         }
-        if (this.hoverTimeout) {
-            window.clearTimeout(this.hoverTimeout);
-            this.hoverTimeout = undefined;
-            this.pendingPreview = undefined;
-        }
         if (this.cleanupTimeout) {
             window.clearTimeout(this.cleanupTimeout);
             this.cleanupTimeout = undefined;
-        }
-        if (this.stillnessCheckTimeout) {
-            window.clearTimeout(this.stillnessCheckTimeout);
-            this.stillnessCheckTimeout = undefined;
         }
         // Safety net: remove any orphaned preview popups
         this.removeOrphanedPreviews();
     }
 
-    private isModifierKeyPressed(event: MouseEvent): boolean {
+    private areClickModifiersPressed(event: MouseEvent): boolean {
         const keys = this.settings.modifierKeys;
-        // Check if ALL required modifiers are pressed
         if (keys.meta && !event.metaKey) return false;
         if (keys.ctrl && !event.ctrlKey) return false;
         if (keys.alt && !event.altKey) return false;
         if (keys.shift && !event.shiftKey) return false;
-        // At least one modifier must be required
         return keys.meta || keys.ctrl || keys.alt || keys.shift;
     }
 
-    private isModifierIntentActive(event: MouseEvent): boolean {
-        return this.isModifierKeyPressed(event) || this.areAllModifiersPressed();
-    }
-
-    private isModifierKeyEvent(event: KeyboardEvent): boolean {
-        const keys = this.settings.modifierKeys;
-        // Return true if any required modifier key is pressed or released
-        if (keys.meta && event.key === 'Meta') return true;
-        if (keys.ctrl && event.key === 'Control') return true;
-        if (keys.alt && event.key === 'Alt') return true;
-        if (keys.shift && event.key === 'Shift') return true;
-        return false;
-    }
-
-    private areAllModifiersPressed(): boolean {
-        const keys = this.settings.modifierKeys;
-        // Check if ALL required modifiers are currently pressed (using tracked state)
-        if (keys.meta && !this.modifierState.meta) return false;
-        if (keys.ctrl && !this.modifierState.ctrl) return false;
-        if (keys.alt && !this.modifierState.alt) return false;
-        if (keys.shift && !this.modifierState.shift) return false;
-        // At least one modifier must be required
+    private hasAnyModifierSelected(keys: ModifierKeyConfig): boolean {
         return keys.meta || keys.ctrl || keys.alt || keys.shift;
-    }
-
-    private handleModifierKeyUp() {
-        if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
-            // Always cancel pending preview when modifiers released
-            if (this.hoverTimeout) {
-                window.clearTimeout(this.hoverTimeout);
-                this.hoverTimeout = undefined;
-                this.pendingPreview = undefined;
-            }
-            if (this.stillnessCheckTimeout) {
-                window.clearTimeout(this.stillnessCheckTimeout);
-                this.stillnessCheckTimeout = undefined;
-                this.pendingPreview = undefined;
-            }
-            this.removeLoadingIndicator();
-
-            // Only close visible preview if setting is enabled
-            if (this.settings.closeOnModifierRelease && !this.settings.stickyPopup) {
-                this.cleanupActivePreview();
-            }
-        }
     }
 
     async loadSettings() {
@@ -1085,6 +867,9 @@ export default class LinkPreviewPlugin extends Plugin {
             // Fresh install, use platform default
             modifierKeys = platformDefaultKeys;
         }
+        if (!this.hasAnyModifierSelected(modifierKeys)) {
+            modifierKeys = platformDefaultKeys;
+        }
 
         this.settings = {
             ...DEFAULT_SETTINGS,
@@ -1099,17 +884,21 @@ export default class LinkPreviewPlugin extends Plugin {
             await this.saveSettings();
         }
 
-        const obsoleteCacheFields = [
+        const obsoleteSettingsFields = [
             'cachedPreviewDelay',
+            'closeOnModifierRelease',
+            'hoverDelay',
             'hideGitHubSignInButton',
             'previewCacheEnabled',
             'previewCacheTtlDays',
             'previewImageCacheEnabled',
             'previewImageCacheTtlDays',
+            'requireModifierKey',
+            'mouseStillnessDelay',
         ];
         const rawSettings = this.settings as LinkPreviewSettings & Record<string, unknown>;
         let removedObsoleteField = false;
-        for (const field of obsoleteCacheFields) {
+        for (const field of obsoleteSettingsFields) {
             if (field in rawSettings) {
                 delete rawSettings[field];
                 removedObsoleteField = true;
@@ -1171,23 +960,6 @@ export default class LinkPreviewPlugin extends Plugin {
         for (const doc of this.handledDocuments) {
             doc.querySelectorAll('.hover-popup').forEach(el => el.remove());
         }
-    }
-
-    private showLoadingIndicator(doc: Document) {
-        this.removeLoadingIndicator();
-        const el = doc.createElement('div');
-        el.addClass('preview-loading-cursor');
-        el.setCssStyles({
-            left: `${this.lastMouseX + 12}px`,
-            top: `${this.lastMouseY + 12}px`,
-        });
-        doc.body.appendChild(el);
-        this.loadingIndicator = el;
-    }
-
-    private removeLoadingIndicator() {
-        this.loadingIndicator?.remove();
-        this.loadingIndicator = undefined;
     }
 
     private createPreviewElement(rect: DOMRect, doc: Document): HTMLElement {
@@ -2000,17 +1772,6 @@ export default class LinkPreviewPlugin extends Plugin {
         return true;
     }
 
-    private isPendingPreviewForLink(linkInfo: LinkInfo): boolean {
-        if (!this.pendingPreview) return false;
-        if (this.pendingPreview.hoverElement !== linkInfo.hoverElement) return false;
-
-        if (this.pendingPreview.sourceKey || linkInfo.sourceKey) {
-            return this.pendingPreview.sourceKey === linkInfo.sourceKey;
-        }
-
-        return true;
-    }
-
     private extractUrlFromElement(element: HTMLElement): string | null {
         // For anchor elements, use href directly
         if (element instanceof HTMLAnchorElement) {
@@ -2207,21 +1968,6 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         containerEl.empty();
 
-        const isModifierKeyEnabled = this.plugin.settings.requireModifierKey;
-
-        new Setting(containerEl)
-            .setName('Require modifier key')
-            .setDesc('Only show preview when holding a modifier key while hovering')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.requireModifierKey)
-                .onChange(async (value) => {
-                    this.plugin.settings.requireModifierKey = value;
-                    await this.plugin.saveSettings();
-                    // Refresh display to update disabled/opacity states
-                    this.display();
-                }));
-
-        // Modifier key toggles
         const modifierKeyNames: { key: keyof ModifierKeyConfig; label: string }[] = [
             { key: 'meta', label: Platform.isMacOS ? 'Command (⌘)' : 'Meta/Win' },
             { key: 'ctrl', label: Platform.isMacOS ? 'Control (⌃)' : 'Ctrl' },
@@ -2230,12 +1976,8 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         ];
 
         const modifierGroup = new SettingGroup(containerEl)
-            .setHeading('Modifier keys')
+            .setHeading('Preview click modifiers')
             .addClass('settings-group-no-margin');
-
-        if (!isModifierKeyEnabled) {
-            modifierGroup.addClass('setting-disabled');
-        }
 
         for (const { key, label } of modifierKeyNames) {
             modifierGroup.addSetting(setting => {
@@ -2247,16 +1989,13 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                             .setValue(this.plugin.settings.modifierKeys[key])
                             .onChange(async (value) => {
                                 this.plugin.settings.modifierKeys[key] = value;
-                                // Ensure at least one modifier is selected when requireModifierKey is enabled
-                                if (this.plugin.settings.requireModifierKey && !this.hasAnyModifierSelected()) {
-                                    // Reset to platform default
+                                if (!this.hasAnyModifierSelected()) {
                                     const defaultKey = Platform.isMacOS ? 'meta' : 'ctrl';
                                     this.plugin.settings.modifierKeys[defaultKey] = true;
                                 }
                                 await this.plugin.saveSettings();
                                 this.display();
                             });
-                        toggle.setDisabled(!isModifierKeyEnabled);
                     });
             });
         }
@@ -2264,24 +2003,6 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         const behaviorGroup = new SettingGroup(containerEl)
             .setHeading('Behavior')
             .addClass('settings-group-no-margin');
-
-        behaviorGroup.addSetting(setting => {
-            setting
-                .setName('Close on key release')
-                .setDesc('Close preview when modifier key is released')
-                .addToggle(toggle => {
-                    toggle
-                        .setValue(this.plugin.settings.closeOnModifierRelease)
-                        .onChange(async (value) => {
-                            this.plugin.settings.closeOnModifierRelease = value;
-                            await this.plugin.saveSettings();
-                        });
-                    toggle.setDisabled(!isModifierKeyEnabled);
-                });
-            if (!isModifierKeyEnabled) {
-                setting.settingEl.addClass('setting-disabled');
-            }
-        });
 
         behaviorGroup.addSetting(setting => {
             setting
@@ -2318,40 +2039,6 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     }));
         });
-
-        new SettingGroup(containerEl)
-            .setHeading('Mouse settings')
-            .addClass('settings-group-no-margin')
-            .addSetting(setting => {
-                setting
-                    .setName('Hover delay')
-                    .setDesc('Delay before showing preview (in ms)')
-                    .addText(text => text
-                        .setPlaceholder('500')
-                        .setValue(String(this.plugin.settings.hoverDelay))
-                        .onChange(async (value) => {
-                            const numValue = Number(value);
-                            if (!isNaN(numValue) && numValue >= 0) {
-                                this.plugin.settings.hoverDelay = numValue;
-                                await this.plugin.saveSettings();
-                            }
-                        }));
-            })
-            .addSetting(setting => {
-                setting
-                    .setName('Mouse stillness delay')
-                    .setDesc('Time in ms the mouse must be stationary before showing preview (0 = disabled)')
-                    .addText(text => text
-                        .setPlaceholder('0')
-                        .setValue(String(this.plugin.settings.mouseStillnessDelay))
-                        .onChange(async (value) => {
-                            const numValue = Number(value);
-                            if (!isNaN(numValue) && numValue >= 0) {
-                                this.plugin.settings.mouseStillnessDelay = numValue;
-                                await this.plugin.saveSettings();
-                            }
-                        }));
-            });
 
         new SettingGroup(containerEl)
             .setHeading('Preview size')
@@ -2451,10 +2138,10 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
     private getModifierKeyDescription(key: keyof ModifierKeyConfig): string {
         const descriptions: Record<keyof ModifierKeyConfig, string> = {
-            meta: Platform.isMacOS ? 'Require Command key' : 'Require Meta/Windows key',
-            ctrl: Platform.isMacOS ? 'Require Control key' : 'Require Ctrl key',
-            alt: Platform.isMacOS ? 'Require Option key' : 'Require Alt key',
-            shift: 'Require Shift key',
+            meta: Platform.isMacOS ? 'Hold Command while clicking a link' : 'Hold Meta/Windows while clicking a link',
+            ctrl: Platform.isMacOS ? 'Hold Control while clicking a link' : 'Hold Ctrl while clicking a link',
+            alt: Platform.isMacOS ? 'Hold Option while clicking a link' : 'Hold Alt while clicking a link',
+            shift: 'Hold Shift while clicking a link',
         };
         return descriptions[key];
     }
