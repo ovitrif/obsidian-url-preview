@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Editor context menu action to convert external URLs to Markdown links using the page title.
 - Subtle pull request number badges beside GitHub PR links in Live Preview and reading mode.
 - Setting to toggle GitHub pull request ID badges.
+- Clickable GitHub pull request ID badges that copy the `#123` reference to the clipboard.
 
 ### Changed
 

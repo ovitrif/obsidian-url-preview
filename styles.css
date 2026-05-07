@@ -104,6 +104,19 @@
     opacity: 0.5;
     text-decoration: none;
     vertical-align: baseline;
+    cursor: pointer;
+}
+
+.url-preview-github-pr-badge:hover,
+.url-preview-github-pr-badge:focus-visible {
+    color: var(--interactive-accent);
+    opacity: 1;
+}
+
+.url-preview-github-pr-badge:focus-visible {
+    border-radius: var(--radius-s);
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 1px;
 }
 
 .url-preview-hide-github-pr-badges .url-preview-github-pr-badge {

@@ -69,6 +69,8 @@ interface ViewRect {
     width: number;
 }
 
+type PullRequestIdCopyHandler = (pullRequestId: string) => void;
+
 interface InlinePreviewControlsState {
     container: HTMLElement;
     githubConvertButton: HTMLElement;
@@ -132,7 +134,10 @@ const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
 ];
 
 class GitHubPullRequestBadgeWidget extends WidgetType {
-    constructor(private readonly pullRequestId: string) {
+    constructor(
+        private readonly pullRequestId: string,
+        private readonly copyPullRequestId: PullRequestIdCopyHandler
+    ) {
         super();
     }
 
@@ -145,6 +150,20 @@ class GitHubPullRequestBadgeWidget extends WidgetType {
         badge.addClass('url-preview-github-pr-badge');
         badge.textContent = `#${this.pullRequestId}`;
         badge.setAttr('aria-label', `Pull request #${this.pullRequestId}`);
+        badge.setAttr('role', 'button');
+        badge.setAttr('tabindex', '0');
+        badge.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.copyPullRequestId(this.pullRequestId);
+        });
+        badge.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            this.copyPullRequestId(this.pullRequestId);
+        });
         return badge;
     }
 
@@ -292,7 +311,12 @@ export default class LinkPreviewPlugin extends Plugin {
                     }).range(link.textStart, link.textEnd),
                     Decoration.widget({
                         side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
-                        widget: new GitHubPullRequestBadgeWidget(pullRequestId),
+                        widget: new GitHubPullRequestBadgeWidget(
+                            pullRequestId,
+                            (id) => {
+                                void this.copyPullRequestId(id);
+                            }
+                        ),
                     }).range(badgePosition),
                 ];
             }),
@@ -410,18 +434,46 @@ export default class LinkPreviewPlugin extends Plugin {
         const nextElement = link.nextElementSibling;
         const existingBadge = nextElement?.classList.contains('url-preview-github-pr-badge') ? nextElement : null;
         if (existingBadge instanceof HTMLElement) {
-            if (existingBadge.textContent !== `#${pullRequestId}`) {
-                existingBadge.textContent = `#${pullRequestId}`;
-                existingBadge.setAttr('aria-label', `Pull request #${pullRequestId}`);
-            }
+            this.configureGitHubPullRequestBadge(existingBadge, pullRequestId);
             return;
         }
 
         const badge = link.ownerDocument.createElement('span');
         badge.addClass('url-preview-github-pr-badge');
+        this.configureGitHubPullRequestBadge(badge, pullRequestId);
+        link.parentElement?.insertBefore(badge, link.nextSibling);
+    }
+
+    private configureGitHubPullRequestBadge(badge: HTMLElement, pullRequestId: string) {
         badge.textContent = `#${pullRequestId}`;
         badge.setAttr('aria-label', `Pull request #${pullRequestId}`);
-        link.parentElement?.insertBefore(badge, link.nextSibling);
+        badge.setAttr('data-pull-request-id', pullRequestId);
+        badge.setAttr('role', 'button');
+        badge.setAttr('tabindex', '0');
+
+        if (badge.getAttribute('data-url-preview-copy-enabled') === 'true') return;
+
+        badge.setAttr('data-url-preview-copy-enabled', 'true');
+        badge.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const currentPullRequestId = badge.getAttribute('data-pull-request-id');
+            if (currentPullRequestId) {
+                void this.copyPullRequestId(currentPullRequestId);
+            }
+        });
+        badge.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const currentPullRequestId = badge.getAttribute('data-pull-request-id');
+            if (currentPullRequestId) {
+                void this.copyPullRequestId(currentPullRequestId);
+            }
+        });
     }
 
     private removeGitHubPullRequestBadge(link: HTMLAnchorElement) {
@@ -441,6 +493,16 @@ export default class LinkPreviewPlugin extends Plugin {
             return match?.[1] ?? null;
         } catch {
             return null;
+        }
+    }
+
+    private async copyPullRequestId(pullRequestId: string) {
+        const label = `#${pullRequestId}`;
+        try {
+            await navigator.clipboard.writeText(label);
+            new Notice(`Copied ${label}`);
+        } catch {
+            new Notice(`Could not copy ${label}`);
         }
     }
 
