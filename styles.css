@@ -9,7 +9,7 @@
     flex-direction: column;
     pointer-events: all;
     position: fixed;
-    z-index: 1000;
+    z-index: 20;
     min-height: 100px;
     overflow: hidden;
 }
@@ -18,12 +18,24 @@
 .preview-buttons {
     flex: 0 0 auto;
     display: flex;
+    align-items: center;
     justify-content: flex-end;
     gap: 2px;
     z-index: 3;
     padding: 4px;
     background: var(--background-primary);
     border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tooltip.url-preview-toolbar-tooltip {
+    z-index: 22;
+    max-width: 180px;
+    padding: 4px 8px;
+    border-radius: var(--radius-s);
+    font-size: var(--font-ui-smaller);
+    font-weight: var(--font-medium);
+    line-height: 1.3;
+    white-space: nowrap;
 }
 
 /* Preview content container */
@@ -52,10 +64,87 @@
     visibility: visible;
 }
 
-/* GitHub-specific: crop top to hide sticky header and progress bar */
-.preview-iframe-wrapper.github-preview iframe {
-    margin-top: -68px;
-    height: calc(100% + 68px);
+/* Scaled iframe viewport for preview zoom controls */
+.preview-iframe-wrapper.preview-scaled-viewport iframe {
+    width: var(--preview-frame-width, 100%);
+    height: var(--preview-frame-height, 100%);
+    transform: scale(var(--preview-frame-scale, 1));
+    transform-origin: top left;
+}
+
+/* Toolbar zoom button group */
+.preview-zoom-controls {
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    margin-right: 4px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background-color: var(--background-primary);
+}
+
+.preview-zoom-input-wrap {
+    display: flex;
+    align-items: center;
+    width: 54px;
+    min-width: 54px;
+    height: var(--input-height);
+    padding: 0 6px 0 4px;
+    background-color: transparent;
+}
+
+.preview-zoom-controls .preview-zoom-input {
+    flex: 1 1 auto;
+    width: 32px;
+    min-width: 0;
+    height: var(--input-height);
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-normal);
+    font-size: var(--font-ui-smaller);
+    outline: none;
+    text-align: right;
+}
+
+.preview-zoom-suffix {
+    flex: 0 0 auto;
+    color: var(--text-normal);
+    font-size: var(--font-ui-smaller);
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.preview-zoom-controls .preview-zoom-input:focus,
+.preview-zoom-controls .preview-zoom-input:focus-visible {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    outline: none;
+}
+
+.preview-zoom-controls .preview-zoom-input::-webkit-inner-spin-button,
+.preview-zoom-controls .preview-zoom-input::-webkit-outer-spin-button {
+    margin: 0;
+    appearance: none;
+}
+
+.preview-zoom-controls .preview-zoom-input[type='number'] {
+    appearance: textfield;
+}
+
+.preview-zoom-controls .preview-zoom-button {
+    border-left: 1px solid var(--background-modifier-border);
+    border-radius: 0;
+}
+
+.preview-zoom-controls .preview-zoom-button:hover,
+.preview-zoom-controls .preview-zoom-button:focus,
+.preview-zoom-controls .preview-zoom-button:focus-visible {
+    border-radius: 0;
 }
 
 /* Loading state indicator */
@@ -135,7 +224,7 @@
 /* Live size indicator during resize */
 .resize-size-indicator {
     position: fixed;
-    z-index: 1001;
+    z-index: 21;
     padding: 2px 6px;
     background: var(--background-secondary);
     border: 1px solid var(--background-modifier-border);
@@ -150,7 +239,7 @@
 /* Loading spinner near cursor during hover delay */
 .preview-loading-cursor {
     position: fixed;
-    z-index: 1001;
+    z-index: 21;
     width: 16px;
     height: 16px;
     border: 2px solid var(--text-muted);
