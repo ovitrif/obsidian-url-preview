@@ -38,6 +38,60 @@
     white-space: nowrap;
 }
 
+/* Inline link affordances shown beside hovered links */
+.url-preview-inline-controls {
+    position: fixed;
+    z-index: 19;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.url-preview-inline-controls.is-visible {
+    opacity: 0.8;
+    pointer-events: auto;
+}
+
+.url-preview-inline-controls:hover,
+.url-preview-inline-controls:focus-within {
+    opacity: 1;
+}
+
+.url-preview-inline-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-s);
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-faint);
+    cursor: pointer;
+}
+
+.url-preview-inline-button.is-hidden {
+    display: none;
+}
+
+.url-preview-inline-button:hover,
+.url-preview-inline-button:focus,
+.url-preview-inline-button:focus-visible {
+    background-color: var(--background-modifier-hover);
+    box-shadow: none;
+    color: var(--interactive-accent);
+}
+
+.url-preview-inline-button svg {
+    width: 13px;
+    height: 13px;
+}
+
 /* Preview content container */
 .preview-iframe-wrapper {
     flex: 1;

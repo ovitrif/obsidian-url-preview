@@ -1,12 +1,17 @@
 import { EditorView } from '@codemirror/view';
 import {
     App,
+    Editor,
+    MarkdownView,
+    Menu,
+    Notice,
     Platform,
     Plugin,
     PluginSettingTab,
     Setting,
     SettingGroup,
     normalizePath,
+    requestUrl,
     setIcon,
     setTooltip,
 } from 'obsidian';
@@ -20,8 +25,10 @@ interface ScreenPoint {
 }
 
 interface LinkInfo {
+    editorView?: EditorView;
     element: HTMLElement;
     hoverElement: HTMLElement;
+    markdownLink?: ParsedMarkdownLink;
     sourceKey?: string;
     url: string;
 }
@@ -35,6 +42,19 @@ interface ParsedMarkdownLink {
     textEnd: number;
     textStart: number;
     url: string;
+}
+
+interface EditorContextLink {
+    link: ParsedMarkdownLink;
+    rawText: string;
+    timestamp: number;
+}
+
+interface InlinePreviewControlsState {
+    container: HTMLElement;
+    githubConvertButton: HTMLElement;
+    previewButton: HTMLElement;
+    target?: LinkInfo;
 }
 
 type GitHubAuthState = 'signed-in' | 'signed-out' | 'unknown';
@@ -68,6 +88,7 @@ const TOOLBAR_TOOLTIP_OPTIONS = {
     gap: 6,
     placement: 'bottom' as const,
 };
+const EDITOR_LINK_SELECTOR = '.external-link, .cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]';
 
 const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
     { direction: 'n', cls: 'resize-handle-n' },
@@ -155,6 +176,9 @@ export default class LinkPreviewPlugin extends Plugin {
     private activeResizeCleanup?: () => void;
     private loadingIndicator?: HTMLElement;
     private handledDocuments = new Set<Document>();
+    private convertLinkMenus = new WeakSet<Menu>();
+    private lastEditorContextLink?: EditorContextLink;
+    private inlinePreviewControls = new Map<Document, InlinePreviewControlsState>();
 
     async onload() {
         await this.loadSettings();
@@ -164,6 +188,17 @@ export default class LinkPreviewPlugin extends Plugin {
         this.app.workspace.onLayoutReady(() => {
             this.registerGlobalHandler();
         });
+
+        this.registerEvent(
+            this.app.workspace.on('editor-menu', (menu, editor) => {
+                this.addConvertToMarkdownLinkMenuItem(menu, editor);
+            })
+        );
+        this.registerEvent(
+            this.app.workspace.on('url-menu', (menu, url) => {
+                this.addConvertToMarkdownLinkMenuItemForUrl(menu, url);
+            })
+        );
         
         this.addSettingTab(new LinkPreviewSettingTab(this.app, this));
     }
@@ -173,7 +208,11 @@ export default class LinkPreviewPlugin extends Plugin {
             if (this.handledDocuments.has(doc)) return;
             this.handledDocuments.add(doc);
 
-            this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => this.handleLinkHover(e));
+            this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
+                this.updateInlinePreviewButton(e);
+                this.handleLinkHover(e);
+            });
+            this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
             this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
                 // Track mouse stillness - only update time if mouse moved significantly.
                 const dx = Math.abs(e.clientX - this.lastMouseX);
@@ -185,6 +224,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
                 if (didMouseMove) {
+                    this.updateInlinePreviewButton(e);
                     this.handleModifierMouseMove(e);
                 }
                 if (this.loadingIndicator) {
@@ -228,9 +268,432 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (this.activePreview?.doc === workspaceWindow.doc) {
                     this.cleanupActivePreview();
                 }
+                this.removeInlinePreviewControls(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
         );
+    }
+
+    private captureEditorContextMenuLink(event: MouseEvent) {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        const editorElement = target.closest('.cm-editor');
+        if (!(editorElement instanceof HTMLElement)) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        if (!this.getEditorLinkTargetElement(target)) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        const editorView = EditorView.findFromDOM(target) ?? EditorView.findFromDOM(editorElement);
+        if (!editorView) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        const content = editorView.state.doc.toString();
+        const link = this.getMarkdownLinkAtPoint(editorView, content, { x: event.clientX, y: event.clientY });
+        if (!link) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        this.lastEditorContextLink = {
+            link,
+            rawText: content.slice(link.start, link.end),
+            timestamp: Date.now(),
+        };
+    }
+
+    private updateInlinePreviewButton(event: MouseEvent) {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+
+        const doc = target.ownerDocument;
+        const state = this.inlinePreviewControls.get(doc);
+        if (state?.container.contains(target)) {
+            return;
+        }
+
+        if (this.activePreview?.element.contains(target)) {
+            this.hideInlinePreviewControls(doc);
+            return;
+        }
+
+        const linkInfo = this.findLinkElement(target, null, { x: event.clientX, y: event.clientY });
+        if (!linkInfo) {
+            this.hideInlinePreviewControls(doc);
+            return;
+        }
+
+        this.showInlinePreviewControls(doc, linkInfo, { x: event.clientX, y: event.clientY });
+    }
+
+    private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
+        const state = this.getInlinePreviewControls(doc);
+        const iconPosition = this.getInlinePreviewControlsPosition(linkInfo.element, point);
+        if (!iconPosition) {
+            this.hideInlinePreviewControls(doc);
+            return;
+        }
+
+        state.container.setCssStyles({
+            left: `${iconPosition.left}px`,
+            top: `${iconPosition.top}px`,
+        });
+        state.container.addClass('is-visible');
+        state.target = linkInfo;
+
+        if (this.canInlineConvertGitHubUrl(linkInfo)) {
+            state.githubConvertButton.removeClass('is-hidden');
+        } else {
+            state.githubConvertButton.addClass('is-hidden');
+        }
+    }
+
+    private getInlinePreviewControls(doc: Document): InlinePreviewControlsState {
+        const existingState = this.inlinePreviewControls.get(doc);
+        if (existingState) return existingState;
+
+        const container = doc.createElement('span');
+        container.addClass('url-preview-inline-controls');
+
+        const githubConvertButton = container.createEl('button', { cls: 'url-preview-inline-button is-hidden' });
+        githubConvertButton.setAttr('type', 'button');
+        githubConvertButton.setAttr('aria-label', 'Convert GitHub URL to Markdown link');
+        setIcon(githubConvertButton, 'github');
+        setTooltip(githubConvertButton, 'Convert GitHub URL to Markdown link', TOOLBAR_TOOLTIP_OPTIONS);
+
+        githubConvertButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const state = this.inlinePreviewControls.get(doc);
+            const targetInfo = state?.target;
+            if (!targetInfo?.editorView || !targetInfo.markdownLink) return;
+
+            this.hideInlinePreviewControls(doc);
+            void this.convertEditorViewLinkToMarkdown(targetInfo.editorView, targetInfo.markdownLink);
+        });
+
+        const previewButton = container.createEl('button', { cls: 'url-preview-inline-button' });
+        previewButton.setAttr('type', 'button');
+        previewButton.setAttr('aria-label', 'Preview link');
+        setIcon(previewButton, 'eye');
+        setTooltip(previewButton, 'Preview link', TOOLBAR_TOOLTIP_OPTIONS);
+
+        previewButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const state = this.inlinePreviewControls.get(doc);
+            if (!state?.target) return;
+
+            const targetInfo = state.target;
+            this.hideInlinePreviewControls(doc);
+            this.showPreview(
+                targetInfo.element,
+                targetInfo.url,
+                targetInfo.hoverElement,
+                targetInfo.sourceKey
+            );
+        });
+
+        doc.body.appendChild(container);
+
+        const state = { container, githubConvertButton, previewButton };
+        this.inlinePreviewControls.set(doc, state);
+
+        return state;
+    }
+
+    private getInlinePreviewControlsPosition(element: HTMLElement, point: ScreenPoint): { left: number; top: number } | null {
+        const rect = this.getClientRectForPoint(element, point);
+        if (!rect) return null;
+
+        const controlSize = 16;
+        const iconGap = 4;
+        return {
+            left: rect.right + iconGap,
+            top: rect.top + (rect.height - controlSize) / 2,
+        };
+    }
+
+    private canInlineConvertGitHubUrl(linkInfo: LinkInfo): boolean {
+        return Boolean(
+            linkInfo.editorView &&
+            linkInfo.markdownLink &&
+            this.isGitHubUrl(linkInfo.url) &&
+            this.isBareMarkdownUrl(linkInfo.markdownLink)
+        );
+    }
+
+    private getClientRectForPoint(element: HTMLElement, point: ScreenPoint): DOMRect | null {
+        const rects = Array.from(element.getClientRects());
+        if (rects.length === 0) return null;
+
+        return rects.find((rect) =>
+            point.y >= rect.top &&
+            point.y <= rect.bottom &&
+            point.x >= rect.left &&
+            point.x <= rect.right
+        ) ?? rects.find((rect) =>
+            point.y >= rect.top &&
+            point.y <= rect.bottom
+        ) ?? rects[rects.length - 1];
+    }
+
+    private hideInlinePreviewControls(doc: Document) {
+        const state = this.inlinePreviewControls.get(doc);
+        if (!state) return;
+
+        state.container.removeClass('is-visible');
+        state.target = undefined;
+    }
+
+    private removeInlinePreviewControls(doc: Document) {
+        const state = this.inlinePreviewControls.get(doc);
+        if (!state) return;
+
+        state.container.remove();
+        this.inlinePreviewControls.delete(doc);
+    }
+
+    private addConvertToMarkdownLinkMenuItemForUrl(menu: Menu, url: string) {
+        const activeMarkdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!activeMarkdownView) return;
+
+        this.addConvertToMarkdownLinkMenuItem(menu, activeMarkdownView.editor, url, true);
+    }
+
+    private addConvertToMarkdownLinkMenuItem(
+        menu: Menu,
+        editor: Editor,
+        expectedUrl?: string,
+        requireRecentContext = false
+    ) {
+        if (this.convertLinkMenus.has(menu)) return;
+
+        const link = requireRecentContext
+            ? this.getRecentEditorContextLink(editor.getValue(), expectedUrl ? this.normalizeUrl(expectedUrl) : null)
+            : this.getEditorContextLink(editor, expectedUrl);
+        if (!link) return;
+
+        this.convertLinkMenus.add(menu);
+        menu.addItem((item) => {
+            item
+                .setTitle(this.isBareMarkdownUrl(link) ? 'Convert URL to Markdown link' : 'Use page title as link text')
+                .setIcon('link')
+                .onClick(() => {
+                    void this.convertEditorLinkToMarkdown(editor, link);
+                });
+        });
+    }
+
+    private getEditorContextLink(editor: Editor, expectedUrl?: string): ParsedMarkdownLink | null {
+        const content = editor.getValue();
+        const normalizedExpectedUrl = expectedUrl ? this.normalizeUrl(expectedUrl) : null;
+        const recentLink = this.getRecentEditorContextLink(content, normalizedExpectedUrl);
+        if (recentLink) return recentLink;
+
+        const selectedLink = this.getSelectedBareUrlLink(editor, normalizedExpectedUrl);
+        if (selectedLink) return selectedLink;
+
+        return this.getEditorLinkAtCursor(editor, content, normalizedExpectedUrl);
+    }
+
+    private getRecentEditorContextLink(content: string, expectedUrl: string | null): ParsedMarkdownLink | null {
+        if (!this.lastEditorContextLink) return null;
+        if (Date.now() - this.lastEditorContextLink.timestamp > 2500) return null;
+
+        const { link, rawText } = this.lastEditorContextLink;
+        if (!this.linkMatchesExpectedUrl(link, expectedUrl)) return null;
+        if (content.slice(link.start, link.end) !== rawText) return null;
+
+        return link;
+    }
+
+    private getSelectedBareUrlLink(editor: Editor, expectedUrl: string | null): ParsedMarkdownLink | null {
+        if (!editor.somethingSelected()) return null;
+
+        const selection = editor.getSelection();
+        const selectedUrlText = selection.trim();
+        const url = this.normalizeUrl(selectedUrlText);
+        if (!url || !this.urlMatchesExpectedUrl(url, expectedUrl)) return null;
+
+        const selectionStart = editor.posToOffset(editor.getCursor('from'));
+        const leadingWhitespaceLength = selection.length - selection.trimStart().length;
+        const start = selectionStart + leadingWhitespaceLength;
+        const end = start + selectedUrlText.length;
+
+        return this.createBareMarkdownUrlLink(start, end, selectedUrlText, url);
+    }
+
+    private getEditorLinkAtCursor(
+        editor: Editor,
+        content: string,
+        expectedUrl: string | null
+    ): ParsedMarkdownLink | null {
+        const offsets = new Set<number>();
+        for (const cursorSide of ['from', 'to', 'head'] as const) {
+            const offset = editor.posToOffset(editor.getCursor(cursorSide));
+            offsets.add(offset);
+            offsets.add(Math.max(0, offset - 1));
+            offsets.add(Math.min(content.length, offset + 1));
+        }
+
+        const markdownLinks = this.parseMarkdownLinks(content);
+        for (const offset of offsets) {
+            const link = this.findParsedMarkdownLinkAtOffset(markdownLinks, offset);
+            if (link && this.linkMatchesExpectedUrl(link, expectedUrl)) {
+                return link;
+            }
+        }
+
+        for (const offset of offsets) {
+            const link = this.getBareMarkdownUrlAtOffset(content, offset);
+            if (link && this.linkMatchesExpectedUrl(link, expectedUrl)) {
+                return link;
+            }
+        }
+
+        return null;
+    }
+
+    private async convertEditorLinkToMarkdown(editor: Editor, originalLink: ParsedMarkdownLink) {
+        let link = this.resolveCurrentEditorLink(editor, originalLink);
+        if (!link) {
+            new Notice('Could not find the link anymore.');
+            return;
+        }
+
+        const notice = new Notice('Fetching page title...', 0);
+        const title = await this.fetchPageTitleForNotice(link.url, notice);
+        if (!title) return;
+
+        link = this.resolveCurrentEditorLink(editor, link);
+        if (!link) {
+            notice.hide();
+            new Notice('The link changed before it could be converted.');
+            return;
+        }
+
+        const replacement = this.createMarkdownLinkReplacement(title, link.url);
+        editor.replaceRange(
+            replacement,
+            editor.offsetToPos(link.start),
+            editor.offsetToPos(link.end),
+            'url-preview-convert-link'
+        );
+        editor.setCursor(editor.offsetToPos(link.start + replacement.length));
+
+        notice.setMessage('Converted URL to Markdown link.');
+        window.setTimeout(() => notice.hide(), 1200);
+    }
+
+    private async convertEditorViewLinkToMarkdown(editorView: EditorView, originalLink: ParsedMarkdownLink) {
+        let link = this.resolveCurrentEditorViewLink(editorView, originalLink);
+        if (!link) {
+            new Notice('Could not find the link anymore.');
+            return;
+        }
+
+        const notice = new Notice('Fetching GitHub title...', 0);
+        const title = await this.fetchPageTitleForNotice(link.url, notice);
+        if (!title) return;
+
+        link = this.resolveCurrentEditorViewLink(editorView, link);
+        if (!link) {
+            notice.hide();
+            new Notice('The link changed before it could be converted.');
+            return;
+        }
+
+        const replacement = this.createMarkdownLinkReplacement(title, link.url);
+        editorView.dispatch({
+            changes: { from: link.start, insert: replacement, to: link.end },
+            selection: { anchor: link.start + replacement.length },
+            scrollIntoView: true,
+        });
+        editorView.focus();
+
+        notice.setMessage('Converted GitHub URL to Markdown link.');
+        window.setTimeout(() => notice.hide(), 1200);
+    }
+
+    private async fetchPageTitleForNotice(url: string, notice: Notice): Promise<string | null> {
+        try {
+            const title = await this.fetchPageTitle(url);
+            if (!title) {
+                notice.hide();
+                new Notice('Could not find a page title for this URL.');
+                return null;
+            }
+            return title;
+        } catch {
+            notice.hide();
+            new Notice('Could not fetch the page title.');
+            return null;
+        }
+    }
+
+    private resolveCurrentEditorLink(editor: Editor, originalLink: ParsedMarkdownLink): ParsedMarkdownLink | null {
+        return this.resolveCurrentLinkInContent(editor.getValue(), originalLink);
+    }
+
+    private resolveCurrentLinkInContent(content: string, originalLink: ParsedMarkdownLink): ParsedMarkdownLink | null {
+        const offsets = [
+            originalLink.start,
+            Math.min(content.length, originalLink.start + 1),
+            Math.max(0, originalLink.end - 1),
+        ];
+        const markdownLinks = this.parseMarkdownLinks(content);
+
+        for (const offset of offsets) {
+            const link = this.findParsedMarkdownLinkAtOffset(markdownLinks, offset);
+            if (link?.url === originalLink.url) {
+                return link;
+            }
+        }
+
+        for (const offset of offsets) {
+            const link = this.getBareMarkdownUrlAtOffset(content, offset);
+            if (link?.url === originalLink.url) {
+                return link;
+            }
+        }
+
+        return null;
+    }
+
+    private resolveCurrentEditorViewLink(editorView: EditorView, originalLink: ParsedMarkdownLink): ParsedMarkdownLink | null {
+        return this.resolveCurrentLinkInContent(editorView.state.doc.toString(), originalLink);
+    }
+
+    private isBareMarkdownUrl(link: ParsedMarkdownLink): boolean {
+        return link.start === link.textStart &&
+            link.end === link.textEnd &&
+            link.start === link.destinationStart &&
+            link.end === link.destinationEnd;
+    }
+
+    private linkMatchesExpectedUrl(link: ParsedMarkdownLink, expectedUrl: string | null): boolean {
+        return this.urlMatchesExpectedUrl(link.url, expectedUrl);
+    }
+
+    private urlMatchesExpectedUrl(url: string, expectedUrl: string | null): boolean {
+        return !expectedUrl || url === expectedUrl;
+    }
+
+    private createMarkdownLinkReplacement(title: string, url: string): string {
+        return `[${this.escapeMarkdownLinkText(title)}](${this.formatMarkdownDestination(url)})`;
     }
 
     private updateModifierState(e: KeyboardEvent) {
@@ -663,6 +1126,9 @@ export default class LinkPreviewPlugin extends Plugin {
 
     onunload() {
         this.cleanupActivePreview();
+        for (const doc of this.inlinePreviewControls.keys()) {
+            this.removeInlinePreviewControls(doc);
+        }
     }
 
     private loadPreviewIframe(iframe: HTMLIFrameElement, url: string) {
@@ -1274,28 +1740,28 @@ export default class LinkPreviewPlugin extends Plugin {
         const editorView = EditorView.findFromDOM(target) ?? EditorView.findFromDOM(editorElement);
         if (!editorView) return null;
 
+        const linkTarget = this.getEditorLinkTargetElement(target);
+        if (!linkTarget) return null;
+
         const content = editorView.state.doc.toString();
-        const hoverElement = this.getEditorHoverElement(target, editorElement);
         const pointLink = point ? this.getMarkdownLinkAtPoint(editorView, content, point) : null;
 
         if (pointLink) {
             return {
-                element: target,
-                hoverElement,
+                editorView,
+                element: linkTarget,
+                hoverElement: linkTarget,
+                markdownLink: pointLink,
                 sourceKey: this.getMarkdownLinkSourceKey(pointLink),
                 url: pointLink.url,
             };
         }
 
-        if (!this.isEditorLinkLikeElement(target)) {
-            return null;
-        }
-
-        const textLink = this.getMarkdownLinkByDisplayText(content, target);
+        const textLink = this.getMarkdownLinkByDisplayText(content, linkTarget);
         if (textLink) {
             return {
-                element: target,
-                hoverElement,
+                element: linkTarget,
+                hoverElement: linkTarget,
                 sourceKey: this.getMarkdownLinkSourceKey(textLink),
                 url: textLink.url,
             };
@@ -1304,16 +1770,9 @@ export default class LinkPreviewPlugin extends Plugin {
         return null;
     }
 
-    private getEditorHoverElement(target: HTMLElement, editorElement: HTMLElement): HTMLElement {
-        const lineElement = target.closest('.cm-line');
-        if (lineElement instanceof HTMLElement) {
-            return lineElement;
-        }
-        return editorElement;
-    }
-
-    private isEditorLinkLikeElement(element: HTMLElement): boolean {
-        return Boolean(element.closest('.cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]'));
+    private getEditorLinkTargetElement(element: HTMLElement): HTMLElement | null {
+        const linkElement = element.closest(EDITOR_LINK_SELECTOR);
+        return linkElement instanceof HTMLElement ? linkElement : null;
     }
 
     private getMarkdownLinkAtPoint(editorView: EditorView, content: string, point: ScreenPoint): ParsedMarkdownLink | null {
@@ -1491,16 +1950,7 @@ export default class LinkPreviewPlugin extends Plugin {
         const url = this.normalizeUrl(displayText);
         if (!url) return null;
 
-        return {
-            destinationEnd: displayText.length,
-            destinationStart: 0,
-            end: displayText.length,
-            start: 0,
-            text: displayText,
-            textEnd: displayText.length,
-            textStart: 0,
-            url,
-        };
+        return this.createBareMarkdownUrlLink(0, displayText.length, displayText, url);
     }
 
     private getBareMarkdownUrlAtOffset(content: string, offset: number): ParsedMarkdownLink | null {
@@ -1516,19 +1966,23 @@ export default class LinkPreviewPlugin extends Plugin {
             const url = this.normalizeUrl(text);
             if (!url) return null;
 
-            return {
-                destinationEnd: end,
-                destinationStart: start,
-                end,
-                start,
-                text,
-                textEnd: end,
-                textStart: start,
-                url,
-            };
+            return this.createBareMarkdownUrlLink(start, end, text, url);
         }
 
         return null;
+    }
+
+    private createBareMarkdownUrlLink(start: number, end: number, text: string, url: string): ParsedMarkdownLink {
+        return {
+            destinationEnd: end,
+            destinationStart: start,
+            end,
+            start,
+            text,
+            textEnd: end,
+            textStart: start,
+            url,
+        };
     }
 
     private getMarkdownLinkSourceKey(link: ParsedMarkdownLink): string {
@@ -1591,6 +2045,139 @@ export default class LinkPreviewPlugin extends Plugin {
         // Fallback to text content (for bare URLs in editor)
         const text = element.textContent?.trim();
         return text ? this.normalizeUrl(text) : null;
+    }
+
+    private async fetchPageTitle(url: string): Promise<string | null> {
+        const html = await this.fetchPageHtml(url);
+        const title = this.extractPageTitle(html, url);
+        if (!title || this.isUnusablePageTitle(title, url)) return null;
+
+        return title;
+    }
+
+    private async fetchPageHtml(url: string): Promise<string> {
+        const headers = await this.getTitleRequestHeaders(url);
+
+        try {
+            const response = await requestUrl({ url, headers, throw: false });
+            return response.text;
+        } catch {
+            if (!headers.Cookie) throw new Error('Title request failed');
+
+            const response = await requestUrl({ url, headers: this.getTitleRequestBaseHeaders(), throw: false });
+            return response.text;
+        }
+    }
+
+    private async getTitleRequestHeaders(url: string): Promise<Record<string, string>> {
+        const headers = this.getTitleRequestBaseHeaders();
+        const cookieHeader = await this.getCookieHeaderForUrl(url);
+        if (cookieHeader) {
+            headers.Cookie = cookieHeader;
+        }
+        return headers;
+    }
+
+    private getTitleRequestBaseHeaders(): Record<string, string> {
+        return {
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        };
+    }
+
+    private async getCookieHeaderForUrl(url: string): Promise<string | null> {
+        const cookies = this.getElectronCookies();
+        if (!cookies) return null;
+
+        try {
+            const parsedUrl = new URL(url);
+            if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+                return null;
+            }
+
+            const matchingCookies = await cookies.get({ url: parsedUrl.href });
+            const cookiePairs = matchingCookies
+                .filter((cookie) => cookie.name.length > 0 && cookie.value.length > 0)
+                .map((cookie) => `${cookie.name}=${cookie.value}`);
+
+            return cookiePairs.length > 0 ? cookiePairs.join('; ') : null;
+        } catch {
+            return null;
+        }
+    }
+
+    private extractPageTitle(html: string, url: string): string | null {
+        const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
+        const githubTitle = this.extractGitHubPageTitle(parsedDocument, url);
+        if (githubTitle) return githubTitle;
+
+        return this.getFirstMetaContent(parsedDocument, [
+            'meta[property="og:title"]',
+            'meta[name="twitter:title"]',
+            'meta[name="title"]',
+        ]) ?? this.cleanPageTitle(parsedDocument.querySelector('title')?.textContent);
+    }
+
+    private extractGitHubPageTitle(doc: Document, url: string): string | null {
+        if (!this.isGitHubUrl(url)) return null;
+
+        const issueTitleElement = doc.querySelector('.js-issue-title, [data-testid="issue-title"], bdi.js-issue-title');
+        const issueTitle = this.cleanPageTitle(issueTitleElement?.textContent);
+        if (issueTitle) return issueTitle;
+
+        const rawTitle = this.getFirstMetaContent(doc, ['meta[property="og:title"]']) ??
+            doc.querySelector('title')?.textContent;
+        return this.cleanGitHubTitle(rawTitle);
+    }
+
+    private cleanGitHubTitle(title: string | null | undefined): string | null {
+        const cleanedTitle = this.cleanPageTitle(title);
+        if (!cleanedTitle) return null;
+
+        const withoutGitHubSuffix = cleanedTitle.replace(/\s+·\s+GitHub$/i, '');
+        const withoutAuthor = withoutGitHubSuffix.replace(
+            /\s+by\s+[^·]+(?=\s+·\s+(?:Pull Request|Issue|Discussion)\s+#\d+)/i,
+            ''
+        );
+        const titleMatch = withoutAuthor.match(
+            /^(.*?)\s+·\s+(?:Pull Request|Issue|Discussion)\s+#\d+\s+·\s+.+$/i
+        );
+
+        return this.cleanPageTitle(titleMatch?.[1] ?? withoutAuthor);
+    }
+
+    private getFirstMetaContent(doc: Document, selectors: string[]): string | null {
+        for (const selector of selectors) {
+            const meta = doc.querySelector(selector);
+            if (!(meta instanceof HTMLMetaElement)) continue;
+
+            const title = this.cleanPageTitle(meta.content);
+            if (title) return title;
+        }
+
+        return null;
+    }
+
+    private cleanPageTitle(title: string | null | undefined): string | null {
+        const cleanedTitle = title?.replace(/\s+/g, ' ').trim();
+        return cleanedTitle ? cleanedTitle : null;
+    }
+
+    private isUnusablePageTitle(title: string, url: string): boolean {
+        if (!this.isGitHubUrl(url)) return false;
+
+        return /^(sign in to github|join github|github)$/i.test(title);
+    }
+
+    private escapeMarkdownLinkText(text: string): string {
+        return text
+            .replace(/\\/g, '\\\\')
+            .replace(/\[/g, '\\[')
+            .replace(/\]/g, '\\]');
+    }
+
+    private formatMarkdownDestination(url: string): string {
+        const safeUrl = url.replace(/</g, '%3C').replace(/>/g, '%3E');
+        return /[\s()<>]/.test(safeUrl) ? `<${safeUrl}>` : safeUrl;
     }
 
     private normalizeUrl(candidate: string): string | null {
