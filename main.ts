@@ -60,6 +60,15 @@ interface TextRange {
     start: number;
 }
 
+interface ViewRect {
+    bottom: number;
+    height: number;
+    left: number;
+    right: number;
+    top: number;
+    width: number;
+}
+
 interface InlinePreviewControlsState {
     container: HTMLElement;
     githubConvertButton: HTMLElement;
@@ -541,7 +550,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
         const state = this.getInlinePreviewControls(doc);
-        const iconPosition = this.getInlinePreviewControlsPosition(linkInfo.element, point, state.container);
+        const iconPosition = this.getInlinePreviewControlsPosition(linkInfo, point, state.container);
         if (!iconPosition) {
             this.hideInlinePreviewControls(doc);
             return;
@@ -618,21 +627,56 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private getInlinePreviewControlsPosition(
-        element: HTMLElement,
+        linkInfo: LinkInfo,
         point: ScreenPoint,
         controlsEl: HTMLElement
     ): { left: number; top: number } | null {
-        const rect = this.getClientRectForPoint(element, point);
+        const rect = this.getInlinePreviewAnchorRect(linkInfo, point);
         if (!rect) return null;
 
-        const adornmentRight = this.getExternalLinkAdornmentRight(element, rect, controlsEl);
+        const adornmentRight = this.getExternalLinkAdornmentRight(linkInfo.element, rect, controlsEl);
         return {
             left: adornmentRight + INLINE_CONTROLS_GAP,
             top: rect.top + (rect.height - INLINE_CONTROLS_SIZE) / 2,
         };
     }
 
-    private getExternalLinkAdornmentRight(element: HTMLElement, rect: DOMRect, controlsEl: HTMLElement): number {
+    private getInlinePreviewAnchorRect(linkInfo: LinkInfo, point: ScreenPoint): ViewRect | null {
+        const editorLinkEndRect = this.getEditorLinkEndRect(linkInfo);
+        if (editorLinkEndRect) return editorLinkEndRect;
+
+        return this.getClientRectForPoint(linkInfo.element, point);
+    }
+
+    private getEditorLinkEndRect(linkInfo: LinkInfo): ViewRect | null {
+        if (!linkInfo.editorView || !linkInfo.markdownLink) return null;
+
+        const contentLength = linkInfo.editorView.state.doc.length;
+        const linkEnd = Math.min(contentLength, Math.max(0, linkInfo.markdownLink.end));
+        const coords = linkInfo.editorView.coordsAtPos(linkEnd, 1) ??
+            linkInfo.editorView.coordsAtPos(Math.max(0, linkEnd - 1), 1);
+        if (!coords) return null;
+
+        return this.toViewRect(coords);
+    }
+
+    private toViewRect(rect: { bottom: number; left: number; right: number; top: number }): ViewRect {
+        const left = Math.min(rect.left, rect.right);
+        const right = Math.max(rect.left, rect.right);
+        const top = Math.min(rect.top, rect.bottom);
+        const bottom = Math.max(rect.top, rect.bottom);
+
+        return {
+            bottom,
+            height: Math.max(1, bottom - top),
+            left,
+            right,
+            top,
+            width: Math.max(1, right - left),
+        };
+    }
+
+    private getExternalLinkAdornmentRight(element: HTMLElement, rect: ViewRect, controlsEl: HTMLElement): number {
         const doc = element.ownerDocument;
         const probeY = rect.top + rect.height / 2;
         let right = rect.right;
@@ -655,7 +699,7 @@ export default class LinkPreviewPlugin extends Plugin {
         candidate: Element,
         linkElement: HTMLElement,
         controlsEl: HTMLElement,
-        linkRect: DOMRect
+        linkRect: ViewRect
     ): boolean {
         if (candidate === linkElement ||
             linkElement.contains(candidate) ||
@@ -680,7 +724,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private isPointInInlineControlsHoverZone(state: InlinePreviewControlsState, point: ScreenPoint): boolean {
         if (!state.target) return false;
 
-        const linkRect = this.getClientRectForPoint(state.target.element, point);
+        const linkRect = this.getInlinePreviewAnchorRect(state.target, point);
         const controlsRect = state.container.getBoundingClientRect();
         if (!linkRect || controlsRect.width === 0 || controlsRect.height === 0) return false;
 
@@ -701,11 +745,11 @@ export default class LinkPreviewPlugin extends Plugin {
         );
     }
 
-    private getClientRectForPoint(element: HTMLElement, point: ScreenPoint): DOMRect | null {
+    private getClientRectForPoint(element: HTMLElement, point: ScreenPoint): ViewRect | null {
         const rects = Array.from(element.getClientRects());
         if (rects.length === 0) return null;
 
-        return rects.find((rect) =>
+        const rect = rects.find((rect) =>
             point.y >= rect.top &&
             point.y <= rect.bottom &&
             point.x >= rect.left &&
@@ -714,6 +758,8 @@ export default class LinkPreviewPlugin extends Plugin {
             point.y >= rect.top &&
             point.y <= rect.bottom
         ) ?? rects[rects.length - 1];
+
+        return this.toViewRect(rect);
     }
 
     private hideInlinePreviewControls(doc: Document) {
