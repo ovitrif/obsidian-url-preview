@@ -97,7 +97,7 @@
 .url-preview-github-pr-badge {
     display: inline-block;
     margin-left: 0.45em;
-    margin-right: 0.35em;
+    margin-right: 0.65em;
     color: var(--text-normal);
     font-size: inherit;
     line-height: inherit;
