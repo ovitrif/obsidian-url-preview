@@ -272,7 +272,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 const pullRequestId = this.getGitHubPullRequestId(link.url);
                 if (!pullRequestId) return [];
 
-                const badgePosition = this.isBareMarkdownUrl(link) ? link.end : link.textEnd;
+                const badgePosition = link.end;
                 const label = `Pull request #${pullRequestId}`;
                 return [
                     Decoration.mark({
