@@ -12,14 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Toolbar zoom controls with hidden per-domain zoom persistence.
 - GitHub auth button in the preview toolbar so GitHub auth can persist across live previews.
 - Bottom-positioned toolbar button tooltips.
-- Modifier-key press alone no longer opens previews; the cursor must move slightly while still over the link.
 - Inline eye button beside hovered links to open previews directly.
 - Inline GitHub button beside bare GitHub URLs to convert them to Markdown links.
 - Editor context menu action to convert external URLs to Markdown links using the page title.
 
 ### Changed
 
-- Default hover delay and mouse stillness delay are now 500ms.
+- Preview trigger now uses configured modifier keys plus click instead of modifier-hover.
 - Refined toolbar zoom controls with the zoom-out button next to the input, a reset icon, and a muted percent suffix.
 - Previews now always load as live iframes instead of static snapshots so browser session cookies can apply.
 - GitHub auth button switches between sign-in and sign-out when desktop GitHub session cookies can be detected.
@@ -27,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Hover-trigger settings: require modifier key, close on key release, hover delay, and mouse stillness delay.
 - Static page snapshot cache and image cache support.
 
 ### Fixed
