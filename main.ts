@@ -69,6 +69,13 @@ interface ViewRect {
     width: number;
 }
 
+interface ModifierState {
+    altKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    shiftKey: boolean;
+}
+
 type PullRequestIdCopyHandler = (pullRequestId: string) => void;
 
 interface InlinePreviewControlsState {
@@ -235,6 +242,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private convertLinkMenus = new WeakSet<Menu>();
     private lastEditorContextLink?: EditorContextLink;
     private inlinePreviewControls = new Map<Document, InlinePreviewControlsState>();
+    private modifierPreviewIndicators = new Map<Document, HTMLElement>();
     private githubPullRequestBadgeObservers = new Map<Document, GitHubPullRequestBadgeObserver>();
     private githubPullRequestBadgeVersion = 0;
 
@@ -331,6 +339,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.updateInlinePreviewButton(e);
+                this.updateModifierPreviewIndicatorFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
             this.registerDomEvent(doc, 'click', (e: MouseEvent) => this.handleLinkClick(e), { capture: true });
@@ -343,12 +352,21 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (didMouseMove) {
                     this.updateInlinePreviewButton(e);
                 }
+                this.updateModifierPreviewIndicatorFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
                 }
+                this.updateModifierPreviewIndicatorFromEvent(doc, e);
             });
+            this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) =>
+                this.updateModifierPreviewIndicatorFromEvent(doc, e)
+            );
+            const win = doc.defaultView;
+            if (win) {
+                this.registerDomEvent(win, 'blur', () => this.hideModifierPreviewIndicator(doc));
+            }
             this.registerGitHubPullRequestBadges(doc);
         };
 
@@ -366,6 +384,7 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.cleanupActivePreview();
                 }
                 this.removeInlinePreviewControls(workspaceWindow.doc);
+                this.removeModifierPreviewIndicator(workspaceWindow.doc);
                 this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
@@ -608,6 +627,82 @@ export default class LinkPreviewPlugin extends Plugin {
         }
 
         this.showInlinePreviewControls(doc, linkInfo, point);
+    }
+
+    private updateModifierPreviewIndicatorFromEvent(doc: Document, event: MouseEvent | KeyboardEvent) {
+        const point = 'clientX' in event
+            ? { x: event.clientX, y: event.clientY }
+            : { x: this.lastMouseX, y: this.lastMouseY };
+        this.lastMouseX = point.x;
+        this.lastMouseY = point.y;
+        this.updateModifierPreviewIndicator(doc, point, this.getModifierState(event));
+    }
+
+    private updateModifierPreviewIndicator(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
+        if (this.activePreview?.doc === doc || !this.areConfiguredModifiersPressed(modifiers)) {
+            this.hideModifierPreviewIndicator(doc);
+            return;
+        }
+
+        const target = doc.elementFromPoint(point.x, point.y);
+        if (!(target instanceof Element)) {
+            this.hideModifierPreviewIndicator(doc);
+            return;
+        }
+
+        if (this.activePreview?.element.contains(target)) {
+            this.hideModifierPreviewIndicator(doc);
+            return;
+        }
+
+        const linkInfo = this.findLinkElement(target, null, point);
+        if (!linkInfo) {
+            this.hideModifierPreviewIndicator(doc);
+            return;
+        }
+
+        this.showModifierPreviewIndicator(doc, point);
+    }
+
+    private showModifierPreviewIndicator(doc: Document, point: ScreenPoint) {
+        const indicator = this.getModifierPreviewIndicator(doc);
+        indicator.setCssStyles({
+            left: `${point.x + 14}px`,
+            top: `${point.y + 18}px`,
+        });
+        indicator.addClass('is-visible');
+    }
+
+    private getModifierPreviewIndicator(doc: Document): HTMLElement {
+        const existingIndicator = this.modifierPreviewIndicators.get(doc);
+        if (existingIndicator) return existingIndicator;
+
+        const indicator = doc.createElement('div');
+        indicator.addClass('url-preview-modifier-indicator');
+
+        const icon = indicator.createSpan('url-preview-modifier-indicator-icon');
+        setIcon(icon, 'eye');
+        indicator.createSpan({ text: 'Click to preview' });
+
+        doc.body.appendChild(indicator);
+        this.modifierPreviewIndicators.set(doc, indicator);
+
+        return indicator;
+    }
+
+    private hideModifierPreviewIndicator(doc: Document) {
+        const indicator = this.modifierPreviewIndicators.get(doc);
+        if (!indicator) return;
+
+        indicator.removeClass('is-visible');
+    }
+
+    private removeModifierPreviewIndicator(doc: Document) {
+        const indicator = this.modifierPreviewIndicators.get(doc);
+        if (!indicator) return;
+
+        indicator.remove();
+        this.modifierPreviewIndicators.delete(doc);
     }
 
     private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
@@ -1083,6 +1178,7 @@ export default class LinkPreviewPlugin extends Plugin {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
+        this.hideModifierPreviewIndicator(target.ownerDocument);
         this.openPreviewForLink(linkInfo);
     }
 
@@ -1250,6 +1346,9 @@ export default class LinkPreviewPlugin extends Plugin {
             this.activeResizeCleanup = undefined;
         }
         if (this.activePreview) {
+            this.hideModifierPreviewIndicator(this.activePreview.doc);
+        }
+        if (this.activePreview) {
             this.activePreview.cleanup();
             this.activePreview = undefined;
         }
@@ -1262,12 +1361,25 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private areClickModifiersPressed(event: MouseEvent): boolean {
+        return this.areConfiguredModifiersPressed(this.getModifierState(event));
+    }
+
+    private areConfiguredModifiersPressed(modifiers: ModifierState): boolean {
         const keys = this.settings.modifierKeys;
-        if (keys.meta && !event.metaKey) return false;
-        if (keys.ctrl && !event.ctrlKey) return false;
-        if (keys.alt && !event.altKey) return false;
-        if (keys.shift && !event.shiftKey) return false;
+        if (keys.meta && !modifiers.metaKey) return false;
+        if (keys.ctrl && !modifiers.ctrlKey) return false;
+        if (keys.alt && !modifiers.altKey) return false;
+        if (keys.shift && !modifiers.shiftKey) return false;
         return keys.meta || keys.ctrl || keys.alt || keys.shift;
+    }
+
+    private getModifierState(event: MouseEvent | KeyboardEvent): ModifierState {
+        return {
+            altKey: event.altKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            shiftKey: event.shiftKey,
+        };
     }
 
     private hasAnyModifierSelected(keys: ModifierKeyConfig): boolean {
@@ -1345,6 +1457,9 @@ export default class LinkPreviewPlugin extends Plugin {
         this.cleanupActivePreview();
         for (const doc of this.inlinePreviewControls.keys()) {
             this.removeInlinePreviewControls(doc);
+        }
+        for (const doc of this.modifierPreviewIndicators.keys()) {
+            this.removeModifierPreviewIndicator(doc);
         }
         for (const doc of this.githubPullRequestBadgeObservers.keys()) {
             this.unregisterGitHubPullRequestBadges(doc);
