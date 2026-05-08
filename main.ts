@@ -2523,6 +2523,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
     constructor(app: App, plugin: LinkPreviewPlugin) {
         super(app, plugin);
+        this.icon = 'eye';
         this.plugin = plugin;
     }
 
