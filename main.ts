@@ -76,7 +76,17 @@ interface ModifierState {
     shiftKey: boolean;
 }
 
-type PullRequestIdCopyHandler = (pullRequestId: string) => void;
+interface GitHubIssueReference {
+    id: string;
+    shortReference: string;
+}
+
+interface ModifierPreviewTooltipState {
+    element: HTMLElement;
+    originalAriaLabel: string | null;
+}
+
+type GitHubIdCopyHandler = (githubId: string) => void;
 
 interface InlinePreviewControlsState {
     container: HTMLElement;
@@ -142,34 +152,34 @@ const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
 
 class GitHubPullRequestBadgeWidget extends WidgetType {
     constructor(
-        private readonly pullRequestId: string,
-        private readonly copyPullRequestId: PullRequestIdCopyHandler
+        private readonly githubId: string,
+        private readonly copyGitHubId: GitHubIdCopyHandler
     ) {
         super();
     }
 
     eq(other: GitHubPullRequestBadgeWidget): boolean {
-        return this.pullRequestId === other.pullRequestId;
+        return this.githubId === other.githubId;
     }
 
     toDOM(view: EditorView): HTMLElement {
         const badge = view.dom.ownerDocument.createElement('span');
         badge.addClass('url-preview-github-pr-badge');
-        badge.textContent = `#${this.pullRequestId}`;
-        badge.setAttr('aria-label', `Pull request #${this.pullRequestId}`);
+        badge.textContent = `#${this.githubId}`;
+        badge.setAttr('aria-label', 'Copy GitHub ID');
         badge.setAttr('role', 'button');
         badge.setAttr('tabindex', '0');
         badge.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            this.copyPullRequestId(this.pullRequestId);
+            this.copyGitHubId(this.githubId);
         });
         badge.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
 
             event.preventDefault();
             event.stopPropagation();
-            this.copyPullRequestId(this.pullRequestId);
+            this.copyGitHubId(this.githubId);
         });
         return badge;
     }
@@ -242,7 +252,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private convertLinkMenus = new WeakSet<Menu>();
     private lastEditorContextLink?: EditorContextLink;
     private inlinePreviewControls = new Map<Document, InlinePreviewControlsState>();
-    private modifierPreviewIndicators = new Map<Document, HTMLElement>();
+    private modifierPreviewTooltip?: ModifierPreviewTooltipState;
     private githubPullRequestBadgeObservers = new Map<Document, GitHubPullRequestBadgeObserver>();
     private githubPullRequestBadgeVersion = 0;
 
@@ -305,24 +315,23 @@ export default class LinkPreviewPlugin extends Plugin {
 
         return Decoration.set(
             links.flatMap((link) => {
-                const pullRequestId = this.getGitHubPullRequestId(link.url);
-                if (!pullRequestId) return [];
+                const githubReference = this.getGitHubIssueReference(link.url);
+                if (!githubReference) return [];
 
                 const badgePosition = link.end;
-                const label = `Pull request #${pullRequestId}`;
                 return [
                     Decoration.mark({
                         attributes: {
-                            'aria-label': label,
+                            'aria-label': githubReference.shortReference,
                             'class': 'url-preview-github-pr-link-tooltip',
                         },
                     }).range(link.textStart, link.textEnd),
                     Decoration.widget({
                         side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
                         widget: new GitHubPullRequestBadgeWidget(
-                            pullRequestId,
+                            githubReference.id,
                             (id) => {
-                                void this.copyPullRequestId(id);
+                                void this.copyGitHubId(id);
                             }
                         ),
                     }).range(badgePosition),
@@ -339,7 +348,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.updateInlinePreviewButton(e);
-                this.updateModifierPreviewIndicatorFromEvent(doc, e);
+                this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
             this.registerDomEvent(doc, 'click', (e: MouseEvent) => this.handleLinkClick(e), { capture: true });
@@ -352,20 +361,20 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (didMouseMove) {
                     this.updateInlinePreviewButton(e);
                 }
-                this.updateModifierPreviewIndicatorFromEvent(doc, e);
+                this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
                 }
-                this.updateModifierPreviewIndicatorFromEvent(doc, e);
+                this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) =>
-                this.updateModifierPreviewIndicatorFromEvent(doc, e)
+                this.updateModifierPreviewTooltipFromEvent(doc, e)
             );
             const win = doc.defaultView;
             if (win) {
-                this.registerDomEvent(win, 'blur', () => this.hideModifierPreviewIndicator(doc));
+                this.registerDomEvent(win, 'blur', () => this.hideModifierPreviewTooltip());
             }
             this.registerGitHubPullRequestBadges(doc);
         };
@@ -384,7 +393,7 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.cleanupActivePreview();
                 }
                 this.removeInlinePreviewControls(workspaceWindow.doc);
-                this.removeModifierPreviewIndicator(workspaceWindow.doc);
+                this.hideModifierPreviewTooltip();
                 this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
@@ -437,36 +446,37 @@ export default class LinkPreviewPlugin extends Plugin {
             if (!(link instanceof HTMLAnchorElement)) continue;
             if (link.closest('.hover-popup, .url-preview-inline-controls, .cm-editor')) continue;
 
-            const pullRequestId = this.getGitHubPullRequestId(link.href);
-            if (!pullRequestId) {
+            const githubReference = this.getGitHubIssueReference(link.href);
+            if (!githubReference) {
                 this.removeGitHubPullRequestBadge(link);
                 continue;
             }
 
-            this.upsertGitHubPullRequestBadge(link, pullRequestId);
+            link.setAttr('aria-label', githubReference.shortReference);
+            this.upsertGitHubPullRequestBadge(link, githubReference.id);
         }
     }
 
-    private upsertGitHubPullRequestBadge(link: HTMLAnchorElement, pullRequestId: string) {
+    private upsertGitHubPullRequestBadge(link: HTMLAnchorElement, githubId: string) {
         link.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
 
         const nextElement = link.nextElementSibling;
         const existingBadge = nextElement?.classList.contains('url-preview-github-pr-badge') ? nextElement : null;
         if (existingBadge instanceof HTMLElement) {
-            this.configureGitHubPullRequestBadge(existingBadge, pullRequestId);
+            this.configureGitHubPullRequestBadge(existingBadge, githubId);
             return;
         }
 
         const badge = link.ownerDocument.createElement('span');
         badge.addClass('url-preview-github-pr-badge');
-        this.configureGitHubPullRequestBadge(badge, pullRequestId);
+        this.configureGitHubPullRequestBadge(badge, githubId);
         link.parentElement?.insertBefore(badge, link.nextSibling);
     }
 
-    private configureGitHubPullRequestBadge(badge: HTMLElement, pullRequestId: string) {
-        badge.textContent = `#${pullRequestId}`;
-        badge.setAttr('aria-label', `Pull request #${pullRequestId}`);
-        badge.setAttr('data-pull-request-id', pullRequestId);
+    private configureGitHubPullRequestBadge(badge: HTMLElement, githubId: string) {
+        badge.textContent = `#${githubId}`;
+        badge.setAttr('aria-label', 'Copy GitHub ID');
+        badge.setAttr('data-github-id', githubId);
         badge.setAttr('role', 'button');
         badge.setAttr('tabindex', '0');
 
@@ -477,9 +487,9 @@ export default class LinkPreviewPlugin extends Plugin {
             event.preventDefault();
             event.stopPropagation();
 
-            const currentPullRequestId = badge.getAttribute('data-pull-request-id');
-            if (currentPullRequestId) {
-                void this.copyPullRequestId(currentPullRequestId);
+            const currentGitHubId = badge.getAttribute('data-github-id');
+            if (currentGitHubId) {
+                void this.copyGitHubId(currentGitHubId);
             }
         });
         badge.addEventListener('keydown', (event) => {
@@ -488,9 +498,9 @@ export default class LinkPreviewPlugin extends Plugin {
             event.preventDefault();
             event.stopPropagation();
 
-            const currentPullRequestId = badge.getAttribute('data-pull-request-id');
-            if (currentPullRequestId) {
-                void this.copyPullRequestId(currentPullRequestId);
+            const currentGitHubId = badge.getAttribute('data-github-id');
+            if (currentGitHubId) {
+                void this.copyGitHubId(currentGitHubId);
             }
         });
     }
@@ -503,20 +513,27 @@ export default class LinkPreviewPlugin extends Plugin {
         }
     }
 
-    private getGitHubPullRequestId(url: string): string | null {
+    private getGitHubIssueReference(url: string): GitHubIssueReference | null {
         try {
             const parsedUrl = new URL(url);
             if (parsedUrl.hostname !== 'github.com') return null;
 
-            const match = parsedUrl.pathname.match(/^\/[^/]+\/[^/]+\/pull\/(\d+)(?:\/|$)/);
-            return match?.[1] ?? null;
+            const [owner, repo, type, id] = parsedUrl.pathname.split('/').filter(Boolean);
+            if (!owner || !repo || !id) return null;
+            if (type !== 'pull' && type !== 'issues') return null;
+            if (!/^\d+$/.test(id)) return null;
+
+            return {
+                id,
+                shortReference: `${owner}/${repo}#${id}`,
+            };
         } catch {
             return null;
         }
     }
 
-    private async copyPullRequestId(pullRequestId: string) {
-        const label = `#${pullRequestId}`;
+    private async copyGitHubId(githubId: string) {
+        const label = `#${githubId}`;
         try {
             await navigator.clipboard.writeText(label);
             new Notice(`Copied ${label}`);
@@ -629,80 +646,62 @@ export default class LinkPreviewPlugin extends Plugin {
         this.showInlinePreviewControls(doc, linkInfo, point);
     }
 
-    private updateModifierPreviewIndicatorFromEvent(doc: Document, event: MouseEvent | KeyboardEvent) {
+    private updateModifierPreviewTooltipFromEvent(doc: Document, event: MouseEvent | KeyboardEvent) {
         const point = 'clientX' in event
             ? { x: event.clientX, y: event.clientY }
             : { x: this.lastMouseX, y: this.lastMouseY };
         this.lastMouseX = point.x;
         this.lastMouseY = point.y;
-        this.updateModifierPreviewIndicator(doc, point, this.getModifierState(event));
+        this.updateModifierPreviewTooltip(doc, point, this.getModifierState(event));
     }
 
-    private updateModifierPreviewIndicator(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
+    private updateModifierPreviewTooltip(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
         if (this.activePreview?.doc === doc || !this.areConfiguredModifiersPressed(modifiers)) {
-            this.hideModifierPreviewIndicator(doc);
+            this.hideModifierPreviewTooltip();
             return;
         }
 
         const target = doc.elementFromPoint(point.x, point.y);
         if (!(target instanceof Element)) {
-            this.hideModifierPreviewIndicator(doc);
+            this.hideModifierPreviewTooltip();
             return;
         }
 
         if (this.activePreview?.element.contains(target)) {
-            this.hideModifierPreviewIndicator(doc);
+            this.hideModifierPreviewTooltip();
             return;
         }
 
         const linkInfo = this.findLinkElement(target, null, point);
         if (!linkInfo) {
-            this.hideModifierPreviewIndicator(doc);
+            this.hideModifierPreviewTooltip();
             return;
         }
 
-        this.showModifierPreviewIndicator(doc, point);
+        this.showModifierPreviewTooltip(linkInfo.element);
     }
 
-    private showModifierPreviewIndicator(doc: Document, point: ScreenPoint) {
-        const indicator = this.getModifierPreviewIndicator(doc);
-        indicator.setCssStyles({
-            left: `${point.x + 14}px`,
-            top: `${point.y + 18}px`,
-        });
-        indicator.addClass('is-visible');
+    private showModifierPreviewTooltip(element: HTMLElement) {
+        if (this.modifierPreviewTooltip?.element === element) return;
+
+        this.hideModifierPreviewTooltip();
+        this.modifierPreviewTooltip = {
+            element,
+            originalAriaLabel: element.getAttribute('aria-label'),
+        };
+        element.setAttr('aria-label', 'Click to preview');
     }
 
-    private getModifierPreviewIndicator(doc: Document): HTMLElement {
-        const existingIndicator = this.modifierPreviewIndicators.get(doc);
-        if (existingIndicator) return existingIndicator;
+    private hideModifierPreviewTooltip() {
+        if (!this.modifierPreviewTooltip) return;
 
-        const indicator = doc.createElement('div');
-        indicator.addClass('url-preview-modifier-indicator');
-
-        const icon = indicator.createSpan('url-preview-modifier-indicator-icon');
-        setIcon(icon, 'eye');
-        indicator.createSpan({ text: 'Click to preview' });
-
-        doc.body.appendChild(indicator);
-        this.modifierPreviewIndicators.set(doc, indicator);
-
-        return indicator;
-    }
-
-    private hideModifierPreviewIndicator(doc: Document) {
-        const indicator = this.modifierPreviewIndicators.get(doc);
-        if (!indicator) return;
-
-        indicator.removeClass('is-visible');
-    }
-
-    private removeModifierPreviewIndicator(doc: Document) {
-        const indicator = this.modifierPreviewIndicators.get(doc);
-        if (!indicator) return;
-
-        indicator.remove();
-        this.modifierPreviewIndicators.delete(doc);
+        const { element, originalAriaLabel } = this.modifierPreviewTooltip;
+        if (originalAriaLabel === null) {
+            element.removeAttribute('aria-label');
+        } else {
+            element.setAttr('aria-label', originalAriaLabel);
+        }
+        this.modifierPreviewTooltip = undefined;
     }
 
     private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
@@ -1178,7 +1177,7 @@ export default class LinkPreviewPlugin extends Plugin {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        this.hideModifierPreviewIndicator(target.ownerDocument);
+        this.hideModifierPreviewTooltip();
         this.openPreviewForLink(linkInfo);
     }
 
@@ -1346,7 +1345,7 @@ export default class LinkPreviewPlugin extends Plugin {
             this.activeResizeCleanup = undefined;
         }
         if (this.activePreview) {
-            this.hideModifierPreviewIndicator(this.activePreview.doc);
+            this.hideModifierPreviewTooltip();
         }
         if (this.activePreview) {
             this.activePreview.cleanup();
@@ -1458,9 +1457,7 @@ export default class LinkPreviewPlugin extends Plugin {
         for (const doc of this.inlinePreviewControls.keys()) {
             this.removeInlinePreviewControls(doc);
         }
-        for (const doc of this.modifierPreviewIndicators.keys()) {
-            this.removeModifierPreviewIndicator(doc);
-        }
+        this.hideModifierPreviewTooltip();
         for (const doc of this.githubPullRequestBadgeObservers.keys()) {
             this.unregisterGitHubPullRequestBadges(doc);
         }

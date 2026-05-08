@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Subtle pull request number badges beside GitHub PR links in Live Preview and reading mode.
 - Setting to toggle GitHub pull request ID badges.
 - Clickable GitHub pull request ID badges that copy the `#123` reference to the clipboard.
-- Cursor hint when modifier-click preview is available over a link.
+- Modifier-hover link tooltip hint when modifier-click preview is available.
 
 ### Changed
 
@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub auth button switches between sign-in and sign-out when desktop GitHub session cookies can be detected.
 - GitHub previews now use the actual preview width for zoom and responsive layout instead of a forced desktop viewport.
 - GitHub pull request ID badges now render after Obsidian's external-link icon.
+- GitHub pull request and issue tooltips now use short `owner/repo#123` references.
 
 ### Removed
 
