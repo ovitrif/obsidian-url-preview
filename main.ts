@@ -86,7 +86,7 @@ interface ModifierPreviewTooltipState {
     originalAriaLabel: string | null;
 }
 
-type GitHubIdCopyHandler = (githubId: string) => void;
+type GitHubReferenceCopyHandler = (githubReference: string) => void;
 
 interface InlinePreviewControlsState {
     container: HTMLElement;
@@ -153,13 +153,14 @@ const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
 class GitHubPullRequestBadgeWidget extends WidgetType {
     constructor(
         private readonly githubId: string,
-        private readonly copyGitHubId: GitHubIdCopyHandler
+        private readonly githubReference: string,
+        private readonly copyGitHubReference: GitHubReferenceCopyHandler
     ) {
         super();
     }
 
     eq(other: GitHubPullRequestBadgeWidget): boolean {
-        return this.githubId === other.githubId;
+        return this.githubId === other.githubId && this.githubReference === other.githubReference;
     }
 
     toDOM(view: EditorView): HTMLElement {
@@ -172,14 +173,14 @@ class GitHubPullRequestBadgeWidget extends WidgetType {
         badge.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            this.copyGitHubId(this.githubId);
+            this.copyGitHubReference(this.githubReference);
         });
         badge.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
 
             event.preventDefault();
             event.stopPropagation();
-            this.copyGitHubId(this.githubId);
+            this.copyGitHubReference(this.githubReference);
         });
         return badge;
     }
@@ -330,8 +331,9 @@ export default class LinkPreviewPlugin extends Plugin {
                         side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
                         widget: new GitHubPullRequestBadgeWidget(
                             githubReference.id,
-                            (id) => {
-                                void this.copyGitHubId(id);
+                            githubReference.shortReference,
+                            (reference) => {
+                                void this.copyGitHubReference(reference);
                             }
                         ),
                     }).range(badgePosition),
@@ -453,30 +455,30 @@ export default class LinkPreviewPlugin extends Plugin {
             }
 
             link.setAttr('aria-label', githubReference.shortReference);
-            this.upsertGitHubPullRequestBadge(link, githubReference.id);
+            this.upsertGitHubPullRequestBadge(link, githubReference);
         }
     }
 
-    private upsertGitHubPullRequestBadge(link: HTMLAnchorElement, githubId: string) {
+    private upsertGitHubPullRequestBadge(link: HTMLAnchorElement, githubReference: GitHubIssueReference) {
         link.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
 
         const nextElement = link.nextElementSibling;
         const existingBadge = nextElement?.classList.contains('url-preview-github-pr-badge') ? nextElement : null;
         if (existingBadge instanceof HTMLElement) {
-            this.configureGitHubPullRequestBadge(existingBadge, githubId);
+            this.configureGitHubPullRequestBadge(existingBadge, githubReference);
             return;
         }
 
         const badge = link.ownerDocument.createElement('span');
         badge.addClass('url-preview-github-pr-badge');
-        this.configureGitHubPullRequestBadge(badge, githubId);
+        this.configureGitHubPullRequestBadge(badge, githubReference);
         link.parentElement?.insertBefore(badge, link.nextSibling);
     }
 
-    private configureGitHubPullRequestBadge(badge: HTMLElement, githubId: string) {
-        badge.textContent = `#${githubId}`;
+    private configureGitHubPullRequestBadge(badge: HTMLElement, githubReference: GitHubIssueReference) {
+        badge.textContent = `#${githubReference.id}`;
         badge.setAttr('aria-label', 'Copy GitHub ID');
-        badge.setAttr('data-github-id', githubId);
+        badge.setAttr('data-github-reference', githubReference.shortReference);
         badge.setAttr('role', 'button');
         badge.setAttr('tabindex', '0');
 
@@ -487,9 +489,9 @@ export default class LinkPreviewPlugin extends Plugin {
             event.preventDefault();
             event.stopPropagation();
 
-            const currentGitHubId = badge.getAttribute('data-github-id');
-            if (currentGitHubId) {
-                void this.copyGitHubId(currentGitHubId);
+            const currentGitHubReference = badge.getAttribute('data-github-reference');
+            if (currentGitHubReference) {
+                void this.copyGitHubReference(currentGitHubReference);
             }
         });
         badge.addEventListener('keydown', (event) => {
@@ -498,9 +500,9 @@ export default class LinkPreviewPlugin extends Plugin {
             event.preventDefault();
             event.stopPropagation();
 
-            const currentGitHubId = badge.getAttribute('data-github-id');
-            if (currentGitHubId) {
-                void this.copyGitHubId(currentGitHubId);
+            const currentGitHubReference = badge.getAttribute('data-github-reference');
+            if (currentGitHubReference) {
+                void this.copyGitHubReference(currentGitHubReference);
             }
         });
     }
@@ -532,13 +534,12 @@ export default class LinkPreviewPlugin extends Plugin {
         }
     }
 
-    private async copyGitHubId(githubId: string) {
-        const label = `#${githubId}`;
+    private async copyGitHubReference(githubReference: string) {
         try {
-            await navigator.clipboard.writeText(label);
-            new Notice(`Copied ${label}`);
+            await navigator.clipboard.writeText(githubReference);
+            new Notice(`Copied ${githubReference}`);
         } catch {
-            new Notice(`Could not copy ${label}`);
+            new Notice(`Could not copy ${githubReference}`);
         }
     }
 
