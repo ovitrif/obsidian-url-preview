@@ -1524,6 +1524,7 @@ export default class LinkPreviewPlugin extends Plugin {
             width: `${bounds.width}px`,
             height: `${bounds.height}px`,
         });
+        this.setPreviewSizeData(el, bounds.width, bounds.height);
         
         return el;
     }
@@ -1671,6 +1672,10 @@ export default class LinkPreviewPlugin extends Plugin {
         const buttons = container.createDiv('preview-buttons');
         const win = container.ownerDocument.defaultView ?? window;
 
+        if (this.settings.allowResize) {
+            this.createSizeControls(buttons, container);
+        }
+
         this.createZoomControls(buttons, container, url);
 
         if (this.isGitHubUrl(url)) {
@@ -1767,6 +1772,78 @@ export default class LinkPreviewPlugin extends Plugin {
         this.configureGitHubAuthButton(button, authState);
     }
 
+    private createSizeControls(buttons: HTMLElement, previewEl: HTMLElement) {
+        const sizeControls = buttons.createDiv('preview-size-controls');
+        const sizeInput = sizeControls.createEl('input', { cls: 'preview-size-input' });
+        sizeInput.setAttr('type', 'text');
+        sizeInput.setAttr('aria-label', 'Preview window size');
+        sizeInput.setAttr('spellcheck', 'false');
+
+        const pinBtn = sizeControls.createEl('button', { cls: 'clickable-icon preview-size-pin-button' });
+
+        const updateSizeInput = () => {
+            sizeInput.value = this.formatPreviewSize(previewEl);
+        };
+        const updatePinButton = () => {
+            const isPinned = this.settings.persistResize;
+            setIcon(pinBtn, isPinned ? 'pin' : 'pin-off');
+            this.setToolbarTooltip(pinBtn, isPinned ? 'Forget preview size' : 'Remember preview size');
+            if (isPinned) {
+                pinBtn.addClass('is-active');
+            } else {
+                pinBtn.removeClass('is-active');
+            }
+        };
+        const applyInputSize = () => {
+            const size = this.parsePreviewSize(sizeInput.value);
+            if (!size) {
+                updateSizeInput();
+                return;
+            }
+
+            this.resizePreviewTo(previewEl, size.width, size.height);
+            this.updatePreviewSizeControls(previewEl, true);
+            if (this.settings.persistResize) {
+                void this.persistPreviewSize(previewEl);
+            }
+        };
+
+        updateSizeInput();
+        updatePinButton();
+
+        sizeInput.addEventListener('click', (event) => event.stopPropagation());
+        sizeInput.addEventListener('change', applyInputSize);
+        sizeInput.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') {
+                applyInputSize();
+                sizeInput.blur();
+            }
+            if (event.key === 'Escape') {
+                updateSizeInput();
+                sizeInput.blur();
+            }
+        });
+
+        pinBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void (async () => {
+                if (this.settings.persistResize) {
+                    this.settings.persistResize = false;
+                    this.settings.persistedWidth = undefined;
+                    this.settings.persistedHeight = undefined;
+                    await this.saveSettings();
+                    updatePinButton();
+                    return;
+                }
+
+                this.settings.persistResize = true;
+                await this.persistPreviewSize(previewEl);
+                updatePinButton();
+            })();
+        });
+    }
+
     private createZoomControls(buttons: HTMLElement, previewEl: HTMLElement, url: string) {
         const zoomControls = buttons.createDiv('preview-zoom-controls');
         const zoomInputWrap = zoomControls.createDiv('preview-zoom-input-wrap');
@@ -1861,7 +1938,80 @@ export default class LinkPreviewPlugin extends Plugin {
             width: `${bounds.width}px`,
             height: `${bounds.height}px`,
         });
+        this.setPreviewSizeData(previewEl, bounds.width, bounds.height);
+        this.updatePreviewSizeControls(previewEl);
         this.applyPreviewViewportProps(previewEl);
+    }
+
+    private setPreviewSizeData(previewEl: HTMLElement, width: number, height: number) {
+        previewEl.setAttr('data-preview-width', String(Math.round(width)));
+        previewEl.setAttr('data-preview-height', String(Math.round(height)));
+    }
+
+    private getPreviewSize(previewEl: HTMLElement): { width: number, height: number } {
+        const rect = previewEl.getBoundingClientRect();
+        const dataWidth = Number(previewEl.getAttribute('data-preview-width'));
+        const dataHeight = Number(previewEl.getAttribute('data-preview-height'));
+        const width = rect.width > 0 ? rect.width : dataWidth;
+        const height = rect.height > 0 ? rect.height : dataHeight;
+
+        return {
+            width: Math.round(Number.isFinite(width) && width > 0 ? width : this.settings.maxPreviewWidth),
+            height: Math.round(Number.isFinite(height) && height > 0 ? height : this.settings.maxPreviewHeight),
+        };
+    }
+
+    private formatPreviewSize(previewEl: HTMLElement): string {
+        const { width, height } = this.getPreviewSize(previewEl);
+        return `${width}x${height}`;
+    }
+
+    private parsePreviewSize(value: string): { width: number, height: number } | null {
+        const match = value.match(/^\s*(\d+)\s*[x\u00d7,]\s*(\d+)\s*$/i);
+        if (!match) return null;
+
+        const width = Number(match[1]);
+        const height = Number(match[2]);
+        if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+
+        return { width, height };
+    }
+
+    private updatePreviewSizeControls(previewEl: HTMLElement, force = false) {
+        const input = previewEl.querySelector('.preview-size-input');
+        if (!(input instanceof HTMLInputElement)) return;
+        if (!force && input.ownerDocument.activeElement === input) return;
+
+        input.value = this.formatPreviewSize(previewEl);
+    }
+
+    private resizePreviewTo(previewEl: HTMLElement, width: number, height: number) {
+        const doc = previewEl.ownerDocument;
+        const win = doc.defaultView ?? window;
+        const margin = 5;
+        const maxWidth = Math.max(MIN_PREVIEW_WIDTH, win.innerWidth - margin * 2);
+        const maxHeight = Math.max(MIN_PREVIEW_HEIGHT, win.innerHeight - margin * 2);
+        const targetWidth = Math.min(maxWidth, Math.max(MIN_PREVIEW_WIDTH, Math.round(width)));
+        const targetHeight = Math.min(maxHeight, Math.max(MIN_PREVIEW_HEIGHT, Math.round(height)));
+        const rect = previewEl.getBoundingClientRect();
+        const currentLeft = rect.width > 0 ? rect.left : margin;
+        const currentTop = rect.height > 0 ? rect.top : margin;
+        const left = Math.max(margin, Math.min(currentLeft, win.innerWidth - targetWidth - margin));
+        const top = Math.max(margin, Math.min(currentTop, win.innerHeight - targetHeight - margin));
+
+        this.applyPreviewBounds(previewEl, {
+            left,
+            top,
+            width: targetWidth,
+            height: targetHeight,
+        });
+    }
+
+    private async persistPreviewSize(previewEl: HTMLElement) {
+        const { width, height } = this.getPreviewSize(previewEl);
+        this.settings.persistedWidth = width;
+        this.settings.persistedHeight = height;
+        await this.saveSettings();
     }
 
     private createResizeHandles(previewEl: HTMLElement) {
@@ -1934,6 +2084,8 @@ export default class LinkPreviewPlugin extends Plugin {
                 width: `${newWidth}px`,
                 height: `${newHeight}px`,
             });
+            this.setPreviewSizeData(previewEl, newWidth, newHeight);
+            this.updatePreviewSizeControls(previewEl);
             this.applyPreviewViewportProps(previewEl);
 
             indicator.textContent = `${Math.round(newWidth)}\u00d7${Math.round(newHeight)}`;
@@ -1951,10 +2103,7 @@ export default class LinkPreviewPlugin extends Plugin {
             this.activeResizeCleanup = undefined;
 
             if (this.settings.persistResize) {
-                const finalRect = previewEl.getBoundingClientRect();
-                this.settings.persistedWidth = Math.round(finalRect.width);
-                this.settings.persistedHeight = Math.round(finalRect.height);
-                void this.saveSettings();
+                void this.persistPreviewSize(previewEl);
             }
         };
 

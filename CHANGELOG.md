@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clickable GitHub pull request ID badges that copy the `owner/repo#123` reference to the clipboard.
 - Modifier-hover link tooltip hint when modifier-click preview is available.
 - Settings sidebar icon for URL Preview.
+- Toolbar size controls with a pin toggle to remember the current preview dimensions.
 
 ### Changed
 

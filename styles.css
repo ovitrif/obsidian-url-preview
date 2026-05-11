@@ -161,7 +161,8 @@
     transform-origin: top left;
 }
 
-/* Toolbar zoom button group */
+/* Toolbar size and zoom button groups */
+.preview-size-controls,
 .preview-zoom-controls {
     display: flex;
     align-items: center;
@@ -170,6 +171,22 @@
     border: 1px solid var(--background-modifier-border);
     border-radius: var(--radius-m);
     background-color: var(--background-primary);
+}
+
+.preview-size-input {
+    width: 78px;
+    height: var(--input-height);
+    margin: 0;
+    padding: 0 6px;
+    border: none;
+    border-radius: 0;
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-normal);
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller);
+    outline: none;
+    text-align: center;
 }
 
 .preview-zoom-input-wrap {
@@ -207,6 +224,8 @@
     pointer-events: none;
 }
 
+.preview-size-input:focus,
+.preview-size-input:focus-visible,
 .preview-zoom-controls .preview-zoom-input:focus,
 .preview-zoom-controls .preview-zoom-input:focus-visible {
     border: none;
@@ -225,15 +244,23 @@
     appearance: textfield;
 }
 
+.preview-size-pin-button,
 .preview-zoom-controls .preview-zoom-button {
     border-left: 1px solid var(--background-modifier-border);
     border-radius: 0;
 }
 
+.preview-size-pin-button:hover,
+.preview-size-pin-button:focus,
+.preview-size-pin-button:focus-visible,
 .preview-zoom-controls .preview-zoom-button:hover,
 .preview-zoom-controls .preview-zoom-button:focus,
 .preview-zoom-controls .preview-zoom-button:focus-visible {
     border-radius: 0;
+}
+
+.preview-size-pin-button.is-active {
+    color: var(--interactive-accent);
 }
 
 /* Loading state indicator */
