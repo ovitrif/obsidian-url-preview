@@ -173,8 +173,10 @@
     background-color: var(--background-primary);
 }
 
-.preview-size-input {
+.hover-popup .preview-size-controls input.preview-size-input {
+    flex: 0 0 auto;
     width: 78px;
+    min-width: 78px;
     height: var(--input-height);
     margin: 0;
     padding: 0 6px;
@@ -186,6 +188,7 @@
     font-family: var(--font-monospace);
     font-size: var(--font-ui-smaller);
     outline: none;
+    appearance: none;
     text-align: center;
 }
 
@@ -224,8 +227,8 @@
     pointer-events: none;
 }
 
-.preview-size-input:focus,
-.preview-size-input:focus-visible,
+.hover-popup .preview-size-controls input.preview-size-input:focus,
+.hover-popup .preview-size-controls input.preview-size-input:focus-visible,
 .preview-zoom-controls .preview-zoom-input:focus,
 .preview-zoom-controls .preview-zoom-input:focus-visible {
     border: none;

@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview loading spinner now remains visible through iframe load/reveal so blank previews are less jarring.
 - Removed GitHub-specific iframe cropping that could create extra blank space above pull request titles.
 - GitHub pull request badges no longer appear on collapsed heading placeholders in Live Preview.
+- Preview size input now matches the toolbar zoom control styling when unfocused.
 
 ## [0.5.0] - 2026-05-05
 
