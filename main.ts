@@ -297,7 +297,12 @@ export default class LinkPreviewPlugin extends Plugin {
 
                 update(update: ViewUpdate) {
                     const version = getBadgeVersion();
-                    if (!update.docChanged && !update.viewportChanged && this.version === version) return;
+                    if (
+                        !update.docChanged &&
+                        !update.geometryChanged &&
+                        !update.viewportChanged &&
+                        this.version === version
+                    ) return;
 
                     this.version = version;
                     this.decorations = buildDecorations(update.view);
@@ -318,6 +323,7 @@ export default class LinkPreviewPlugin extends Plugin {
             links.flatMap((link) => {
                 const githubReference = this.getGitHubIssueReference(link.url);
                 if (!githubReference) return [];
+                if (!this.isEditorLinkTextVisible(view, link)) return [];
 
                 const badgePosition = link.end;
                 return [
@@ -341,6 +347,14 @@ export default class LinkPreviewPlugin extends Plugin {
             }),
             true
         );
+    }
+
+    private isEditorLinkTextVisible(view: EditorView, link: ParsedMarkdownLink): boolean {
+        return this.isEditorRangeVisible(view, link.textStart, link.textEnd);
+    }
+
+    private isEditorRangeVisible(view: EditorView, from: number, to: number): boolean {
+        return view.visibleRanges.some((range) => from >= range.from && to <= range.to);
     }
 
     private registerGlobalHandler() {
