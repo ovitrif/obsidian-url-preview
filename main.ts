@@ -326,13 +326,19 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (!this.isEditorLinkTextVisible(view, link)) return [];
 
                 const badgePosition = link.end;
+                const linkTooltip = Decoration.mark({
+                    attributes: {
+                        'aria-label': githubReference.shortReference,
+                        'class': 'url-preview-github-pr-link-tooltip',
+                    },
+                }).range(link.textStart, link.textEnd);
+
+                if (this.linkTextContainsGitHubId(link.text, githubReference.id)) {
+                    return [linkTooltip];
+                }
+
                 return [
-                    Decoration.mark({
-                        attributes: {
-                            'aria-label': githubReference.shortReference,
-                            'class': 'url-preview-github-pr-link-tooltip',
-                        },
-                    }).range(link.textStart, link.textEnd),
+                    linkTooltip,
                     Decoration.widget({
                         side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
                         widget: new GitHubPullRequestBadgeWidget(
@@ -469,6 +475,11 @@ export default class LinkPreviewPlugin extends Plugin {
             }
 
             link.setAttr('aria-label', githubReference.shortReference);
+            if (this.linkTextContainsGitHubId(link.textContent ?? '', githubReference.id)) {
+                this.removeGitHubPullRequestBadge(link);
+                continue;
+            }
+
             this.upsertGitHubPullRequestBadge(link, githubReference);
         }
     }
@@ -527,6 +538,10 @@ export default class LinkPreviewPlugin extends Plugin {
         if (nextElement?.classList.contains('url-preview-github-pr-badge')) {
             nextElement.remove();
         }
+    }
+
+    private linkTextContainsGitHubId(text: string, id: string): boolean {
+        return new RegExp(`#${id}(?!\\d)`).test(text);
     }
 
     private getGitHubIssueReference(url: string): GitHubIssueReference | null {
