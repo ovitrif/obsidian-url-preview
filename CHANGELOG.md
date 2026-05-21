@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub pull request badges no longer appear on collapsed heading placeholders in Live Preview.
 - Preview size input now matches the toolbar zoom control styling when unfocused.
 - GitHub pull request badges are hidden when the Markdown link text already includes the same `#123`.
+- Restored GitHub pull request badges on normal Live Preview links after tightening the folded-heading fix.
 
 ## [0.5.0] - 2026-05-05
 

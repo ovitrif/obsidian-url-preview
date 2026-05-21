@@ -127,6 +127,10 @@
     display: none;
 }
 
+.cm-line .cm-foldPlaceholder ~ .url-preview-github-pr-badge {
+    display: none;
+}
+
 /* Preview content container */
 .preview-iframe-wrapper {
     flex: 1;

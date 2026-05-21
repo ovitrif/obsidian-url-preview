@@ -323,7 +323,6 @@ export default class LinkPreviewPlugin extends Plugin {
             links.flatMap((link) => {
                 const githubReference = this.getGitHubIssueReference(link.url);
                 if (!githubReference) return [];
-                if (!this.isEditorLinkTextVisible(view, link)) return [];
 
                 const badgePosition = link.end;
                 const linkTooltip = Decoration.mark({
@@ -353,14 +352,6 @@ export default class LinkPreviewPlugin extends Plugin {
             }),
             true
         );
-    }
-
-    private isEditorLinkTextVisible(view: EditorView, link: ParsedMarkdownLink): boolean {
-        return this.isEditorRangeVisible(view, link.textStart, link.textEnd);
-    }
-
-    private isEditorRangeVisible(view: EditorView, from: number, to: number): boolean {
-        return view.visibleRanges.some((range) => from >= range.from && to <= range.to);
     }
 
     private registerGlobalHandler() {
