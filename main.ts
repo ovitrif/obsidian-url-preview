@@ -78,7 +78,10 @@ interface ModifierState {
 
 interface GitHubIssueReference {
     id: string;
+    owner: string;
+    repo: string;
     shortReference: string;
+    type: 'issues' | 'pull';
 }
 
 interface ModifierPreviewTooltipState {
@@ -98,6 +101,27 @@ interface InlinePreviewControlsState {
 interface GitHubPullRequestBadgeObserver {
     observer: MutationObserver;
     scheduled: boolean;
+}
+
+interface GitHubHoverCardData {
+    description: string | null;
+    id: string;
+    repoLabel: string;
+    shortReference: string;
+    state: string | null;
+    title: string;
+    type: 'issues' | 'pull';
+}
+
+interface GitHubHoverCardState {
+    element: HTMLElement;
+    key?: string;
+    linkInfo?: LinkInfo;
+    pendingKey?: string;
+    point?: ScreenPoint;
+    reference?: GitHubIssueReference;
+    requestId: number;
+    showTimeout?: number;
 }
 
 type GitHubAuthState = 'signed-in' | 'signed-out' | 'unknown';
@@ -129,6 +153,9 @@ const INLINE_CONTROLS_GAP = 4;
 const INLINE_CONTROLS_SIZE = 16;
 const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 120;
 const GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE = 10000;
+const GITHUB_HOVER_CARD_DELAY_MS = 250;
+const GITHUB_HOVER_CARD_GAP = 12;
+const GITHUB_HOVER_CARD_MARGIN = 10;
 const MIN_PREVIEW_LOADING_MS = 750;
 const POST_LOAD_SPINNER_MS = 350;
 const TOOLBAR_TOOLTIP_OPTIONS = {
@@ -256,6 +283,8 @@ export default class LinkPreviewPlugin extends Plugin {
     private modifierPreviewTooltip?: ModifierPreviewTooltipState;
     private githubPullRequestBadgeObservers = new Map<Document, GitHubPullRequestBadgeObserver>();
     private githubPullRequestBadgeVersion = 0;
+    private githubHoverCards = new Map<Document, GitHubHoverCardState>();
+    private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
 
     async onload() {
         await this.loadSettings();
@@ -361,10 +390,14 @@ export default class LinkPreviewPlugin extends Plugin {
 
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.updateInlinePreviewButton(e);
+                this.updateGitHubHoverCardFromEvent(e);
                 this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
-            this.registerDomEvent(doc, 'click', (e: MouseEvent) => this.handleLinkClick(e), { capture: true });
+            this.registerDomEvent(doc, 'click', (e: MouseEvent) => {
+                this.hideGitHubHoverCard(doc);
+                this.handleLinkClick(e);
+            }, { capture: true });
             this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
                 const dx = Math.abs(e.clientX - this.lastMouseX);
                 const dy = Math.abs(e.clientY - this.lastMouseY);
@@ -374,11 +407,15 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (didMouseMove) {
                     this.updateInlinePreviewButton(e);
                 }
+                this.updateGitHubHoverCardFromEvent(e);
                 this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
+                }
+                if (e.key === 'Escape') {
+                    this.hideGitHubHoverCard(doc);
                 }
                 this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
@@ -387,7 +424,10 @@ export default class LinkPreviewPlugin extends Plugin {
             );
             const win = doc.defaultView;
             if (win) {
-                this.registerDomEvent(win, 'blur', () => this.hideModifierPreviewTooltip());
+                this.registerDomEvent(win, 'blur', () => {
+                    this.hideGitHubHoverCard(doc);
+                    this.hideModifierPreviewTooltip();
+                });
             }
             this.registerGitHubPullRequestBadges(doc);
         };
@@ -406,6 +446,7 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.cleanupActivePreview();
                 }
                 this.removeInlinePreviewControls(workspaceWindow.doc);
+                this.removeGitHubHoverCard(workspaceWindow.doc);
                 this.hideModifierPreviewTooltip();
                 this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
@@ -547,7 +588,10 @@ export default class LinkPreviewPlugin extends Plugin {
 
             return {
                 id,
+                owner,
+                repo,
                 shortReference: `${owner}/${repo}#${id}`,
+                type,
             };
         } catch {
             return null;
@@ -723,6 +767,300 @@ export default class LinkPreviewPlugin extends Plugin {
             element.setAttr('aria-label', originalAriaLabel);
         }
         this.modifierPreviewTooltip = undefined;
+    }
+
+    private updateGitHubHoverCardFromEvent(event: MouseEvent) {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+
+        const doc = target.ownerDocument;
+        const point = { x: event.clientX, y: event.clientY };
+        if (this.activePreview?.doc === doc || this.activePreview?.element.contains(target)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        const linkInfo = this.findLinkElement(target, null, point);
+        if (!linkInfo) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        const reference = this.getGitHubIssueReference(linkInfo.url);
+        if (!reference) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        this.scheduleGitHubHoverCard(doc, linkInfo, reference, point);
+    }
+
+    private scheduleGitHubHoverCard(
+        doc: Document,
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference,
+        point: ScreenPoint
+    ) {
+        const state = this.getGitHubHoverCard(doc);
+        const key = this.getGitHubHoverCardKey(linkInfo, reference);
+
+        if (state.key === key || state.pendingKey === key) {
+            state.linkInfo = linkInfo;
+            state.point = point;
+            state.reference = reference;
+            if (state.element.classList.contains('is-visible')) {
+                this.positionGitHubHoverCard(state.element, linkInfo, point);
+            }
+            return;
+        }
+
+        this.clearGitHubHoverCardTimer(state);
+        state.key = undefined;
+        state.pendingKey = key;
+        state.linkInfo = linkInfo;
+        state.point = point;
+        state.reference = reference;
+        state.element.removeClass('is-visible');
+
+        const win = doc.defaultView ?? window;
+        state.showTimeout = win.setTimeout(() => {
+            if (state.pendingKey !== key || !state.linkInfo || !state.reference || !state.point) return;
+
+            state.key = key;
+            state.pendingKey = undefined;
+            this.renderGitHubHoverCard(
+                state.element,
+                this.createGitHubHoverCardFallbackData(state.linkInfo, state.reference)
+            );
+            this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
+            state.element.addClass('is-visible');
+            void this.loadGitHubHoverCardData(state, state.linkInfo, state.reference, key);
+        }, GITHUB_HOVER_CARD_DELAY_MS);
+    }
+
+    private getGitHubHoverCard(doc: Document): GitHubHoverCardState {
+        const existingState = this.githubHoverCards.get(doc);
+        if (existingState) return existingState;
+
+        const element = doc.createElement('div');
+        element.addClass('url-preview-github-hover-card');
+        doc.body.appendChild(element);
+
+        const state = { element, requestId: 0 };
+        this.githubHoverCards.set(doc, state);
+        return state;
+    }
+
+    private hideGitHubHoverCard(doc: Document) {
+        const state = this.githubHoverCards.get(doc);
+        if (!state) return;
+
+        this.clearGitHubHoverCardTimer(state);
+        state.key = undefined;
+        state.pendingKey = undefined;
+        state.linkInfo = undefined;
+        state.point = undefined;
+        state.reference = undefined;
+        state.element.removeClass('is-visible');
+    }
+
+    private removeGitHubHoverCard(doc: Document) {
+        const state = this.githubHoverCards.get(doc);
+        if (!state) return;
+
+        this.clearGitHubHoverCardTimer(state);
+        state.element.remove();
+        this.githubHoverCards.delete(doc);
+    }
+
+    private clearGitHubHoverCardTimer(state: GitHubHoverCardState) {
+        if (!state.showTimeout) return;
+
+        const win = state.element.ownerDocument.defaultView ?? window;
+        win.clearTimeout(state.showTimeout);
+        state.showTimeout = undefined;
+    }
+
+    private getGitHubHoverCardKey(linkInfo: LinkInfo, reference: GitHubIssueReference): string {
+        return `${linkInfo.url}:${reference.shortReference}`;
+    }
+
+    private async loadGitHubHoverCardData(
+        state: GitHubHoverCardState,
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference,
+        key: string
+    ) {
+        const requestId = state.requestId + 1;
+        state.requestId = requestId;
+        const data = await this.getGitHubHoverCardData(linkInfo, reference);
+        if (state.requestId !== requestId || state.key !== key || !state.linkInfo || !state.point) return;
+
+        this.renderGitHubHoverCard(state.element, data);
+        this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
+    }
+
+    private renderGitHubHoverCard(card: HTMLElement, data: GitHubHoverCardData) {
+        card.empty();
+
+        const header = card.createDiv('url-preview-github-hover-card-header');
+        const repo = header.createSpan({ cls: 'url-preview-github-hover-card-repo', text: data.repoLabel });
+        repo.setAttr('title', data.repoLabel);
+        header.createSpan({ cls: 'url-preview-github-hover-card-id', text: `#${data.id}` });
+
+        const titleRow = card.createDiv('url-preview-github-hover-card-title-row');
+        const icon = titleRow.createSpan('url-preview-github-hover-card-icon');
+        setIcon(icon, data.type === 'pull' ? 'git-pull-request' : 'circle-dot');
+        titleRow.createSpan({ cls: 'url-preview-github-hover-card-title', text: data.title });
+
+        const meta = card.createDiv('url-preview-github-hover-card-meta');
+        const typeLabel = data.type === 'pull' ? 'Pull request' : 'Issue';
+        meta.createSpan({ cls: 'url-preview-github-hover-card-type', text: typeLabel });
+        if (data.state) {
+            const state = meta.createSpan({
+                cls: `url-preview-github-hover-card-state is-${data.state.toLowerCase()}`,
+                text: data.state,
+            });
+            state.setAttr('title', data.state);
+        }
+
+        if (data.description) {
+            card.createDiv({ cls: 'url-preview-github-hover-card-description', text: data.description });
+        }
+    }
+
+    private positionGitHubHoverCard(card: HTMLElement, linkInfo: LinkInfo, point: ScreenPoint) {
+        const rect = this.getInlinePreviewAnchorRect(linkInfo, point) ?? this.getClientRectForPoint(linkInfo.element, point);
+        if (!rect) return;
+
+        const win = card.ownerDocument.defaultView ?? window;
+        const cardRect = card.getBoundingClientRect();
+        const cardWidth = cardRect.width || Math.min(420, win.innerWidth - GITHUB_HOVER_CARD_MARGIN * 2);
+        const cardHeight = cardRect.height || 160;
+        const maxLeft = Math.max(GITHUB_HOVER_CARD_MARGIN, win.innerWidth - cardWidth - GITHUB_HOVER_CARD_MARGIN);
+        const left = Math.max(
+            GITHUB_HOVER_CARD_MARGIN,
+            Math.min(rect.left + rect.width / 2 - cardWidth / 2, maxLeft)
+        );
+        const showAbove = rect.top >= cardHeight + GITHUB_HOVER_CARD_GAP + GITHUB_HOVER_CARD_MARGIN;
+        const top = showAbove
+            ? rect.top - cardHeight - GITHUB_HOVER_CARD_GAP
+            : Math.min(rect.bottom + GITHUB_HOVER_CARD_GAP, win.innerHeight - cardHeight - GITHUB_HOVER_CARD_MARGIN);
+
+        card.setCssStyles({
+            left: `${left}px`,
+            top: `${Math.max(GITHUB_HOVER_CARD_MARGIN, top)}px`,
+        });
+        if (showAbove) {
+            card.addClass('is-above');
+            card.removeClass('is-below');
+        } else {
+            card.addClass('is-below');
+            card.removeClass('is-above');
+        }
+        card.setCssProps({
+            '--url-preview-github-hover-card-anchor-x': `${rect.left + rect.width / 2 - left}px`,
+        });
+    }
+
+    private createGitHubHoverCardFallbackData(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): GitHubHoverCardData {
+        return {
+            description: null,
+            id: reference.id,
+            repoLabel: `${reference.owner}/${reference.repo}`,
+            shortReference: reference.shortReference,
+            state: null,
+            title: this.getGitHubHoverCardLinkTitle(linkInfo, reference) ??
+                `${reference.type === 'pull' ? 'Pull request' : 'Issue'} #${reference.id}`,
+            type: reference.type,
+        };
+    }
+
+    private async getGitHubHoverCardData(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): Promise<GitHubHoverCardData> {
+        const cached = this.githubHoverCardDataCache.get(linkInfo.url);
+        if (cached) return cached;
+
+        const promise = this.fetchGitHubHoverCardData(linkInfo, reference)
+            .then((data) => {
+                this.githubHoverCardDataCache.set(linkInfo.url, data);
+                return data;
+            })
+            .catch(() => {
+                const data = this.createGitHubHoverCardFallbackData(linkInfo, reference);
+                this.githubHoverCardDataCache.set(linkInfo.url, data);
+                return data;
+            });
+
+        this.githubHoverCardDataCache.set(linkInfo.url, promise);
+        return promise;
+    }
+
+    private async fetchGitHubHoverCardData(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): Promise<GitHubHoverCardData> {
+        const fallbackData = this.createGitHubHoverCardFallbackData(linkInfo, reference);
+        const html = await this.fetchPageHtml(linkInfo.url);
+        const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
+        const title = this.extractGitHubPageTitle(parsedDocument, linkInfo.url) ?? fallbackData.title;
+
+        return {
+            ...fallbackData,
+            description: this.extractGitHubHoverCardDescription(parsedDocument, title),
+            state: this.extractGitHubHoverCardState(parsedDocument),
+            title,
+        };
+    }
+
+    private getGitHubHoverCardLinkTitle(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): string | null {
+        const text = this.cleanPageTitle(linkInfo.markdownLink?.text ?? linkInfo.element.textContent);
+        if (!text || this.normalizeUrl(text)) return null;
+        if (text === reference.shortReference) return null;
+
+        const withoutTrailingId = this.cleanPageTitle(text.replace(new RegExp(`\\s*#${reference.id}\\s*$`), ''));
+        return withoutTrailingId && withoutTrailingId !== reference.shortReference ? withoutTrailingId : null;
+    }
+
+    private extractGitHubHoverCardDescription(doc: Document, title: string): string | null {
+        const commentText = this.cleanPageTitle(doc.querySelector('.comment-body')?.textContent);
+        const metaText = this.getFirstMetaContent(doc, [
+            'meta[property="og:description"]',
+            'meta[name="description"]',
+        ]);
+        const description = commentText ?? metaText;
+        if (!description || description === title || /github is where/i.test(description)) return null;
+
+        return this.truncateText(description, 180);
+    }
+
+    private extractGitHubHoverCardState(doc: Document): string | null {
+        const stateText = this.cleanPageTitle(
+            doc.querySelector('.State, [data-testid="issue-state"], .gh-header-meta .State')?.textContent
+        );
+        if (!stateText) return null;
+
+        const normalized = stateText.toLowerCase();
+        if (normalized.includes('merged')) return 'Merged';
+        if (normalized.includes('closed')) return 'Closed';
+        if (normalized.includes('draft')) return 'Draft';
+        if (normalized.includes('open')) return 'Open';
+        return null;
+    }
+
+    private truncateText(text: string, maxLength: number): string {
+        if (text.length <= maxLength) return text;
+
+        const truncated = text.slice(0, maxLength - 1).trimEnd();
+        return `${truncated}...`;
     }
 
     private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
@@ -1477,6 +1815,9 @@ export default class LinkPreviewPlugin extends Plugin {
         this.cleanupActivePreview();
         for (const doc of this.inlinePreviewControls.keys()) {
             this.removeInlinePreviewControls(doc);
+        }
+        for (const doc of this.githubHoverCards.keys()) {
+            this.removeGitHubHoverCard(doc);
         }
         this.hideModifierPreviewTooltip();
         for (const doc of this.githubPullRequestBadgeObservers.keys()) {

@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modifier-hover link tooltip hint when modifier-click preview is available.
 - Settings sidebar icon for URL Preview.
 - Toolbar size controls with a pin toggle to remember the current preview dimensions.
+- GitHub hover cards for pull request and issue links on regular link hover.
 
 ### Changed
 
