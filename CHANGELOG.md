@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline link action buttons now stay visible across the hovered visual line and use larger circular icons.
 - GitHub hover card loading beam now renders as a real card element instead of a pseudo-element.
 - Inline link action buttons now keep a full-width cached hover zone for the active link row.
+- Preview popups now use a stronger layered shadow so they stand out from the page behind them.
 
 ## [0.5.0] - 2026-05-05
 

@@ -3,7 +3,10 @@
     background-color: var(--background-primary);
     border: 1px solid var(--background-modifier-border);
     border-radius: var(--radius-l);
-    box-shadow: var(--shadow-s);
+    box-shadow:
+        0 28px 90px rgba(0, 0, 0, 0.55),
+        0 10px 30px rgba(0, 0, 0, 0.38),
+        0 0 0 1px rgba(255, 255, 255, 0.06);
     padding: 0;
     display: flex;
     flex-direction: column;
