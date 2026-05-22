@@ -832,6 +832,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 state.element,
                 this.createGitHubHoverCardFallbackData(state.linkInfo, state.reference)
             );
+            state.element.removeClass('is-loading');
             this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
             state.element.addClass('is-visible');
             void this.loadGitHubHoverCardData(state, state.linkInfo, state.reference, key);
@@ -861,6 +862,7 @@ export default class LinkPreviewPlugin extends Plugin {
         state.linkInfo = undefined;
         state.point = undefined;
         state.reference = undefined;
+        state.element.removeClass('is-loading');
         state.element.removeClass('is-visible');
     }
 
@@ -893,11 +895,23 @@ export default class LinkPreviewPlugin extends Plugin {
     ) {
         const requestId = state.requestId + 1;
         state.requestId = requestId;
+        const cachedData = this.githubHoverCardDataCache.get(linkInfo.url);
+        if (!cachedData || this.isPromiseLike(cachedData)) {
+            state.element.addClass('is-loading');
+        }
+
         const data = await this.getGitHubHoverCardData(linkInfo, reference);
         if (state.requestId !== requestId || state.key !== key || !state.linkInfo || !state.point) return;
 
+        state.element.removeClass('is-loading');
         this.renderGitHubHoverCard(state.element, data);
         this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
+    }
+
+    private isPromiseLike(
+        value: GitHubHoverCardData | Promise<GitHubHoverCardData>
+    ): value is Promise<GitHubHoverCardData> {
+        return typeof (value as Promise<GitHubHoverCardData>).then === 'function';
     }
 
     private renderGitHubHoverCard(card: HTMLElement, data: GitHubHoverCardData) {
