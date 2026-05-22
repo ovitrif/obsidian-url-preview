@@ -94,6 +94,7 @@ type GitHubReferenceCopyHandler = (githubReference: string) => void;
 interface InlinePreviewControlsState {
     container: HTMLElement;
     githubConvertButton: HTMLElement;
+    hoverZone?: ViewRect;
     previewButton: HTMLElement;
     target?: LinkInfo;
 }
@@ -1130,6 +1131,7 @@ export default class LinkPreviewPlugin extends Plugin {
             top: `${iconPosition.top}px`,
         });
         state.container.addClass('is-visible');
+        state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
         state.target = linkInfo;
 
         if (this.canInlineConvertGitHubUrl(linkInfo)) {
@@ -1293,12 +1295,11 @@ export default class LinkPreviewPlugin extends Plugin {
     private isPointInInlineControlsHoverZone(state: InlinePreviewControlsState, point: ScreenPoint): boolean {
         if (!state.target) return false;
 
-        const lineRect = this.getInlinePreviewLineHoverRect(state.target, point);
-        if (lineRect &&
-            point.x >= lineRect.left &&
-            point.x <= lineRect.right &&
-            point.y >= lineRect.top &&
-            point.y <= lineRect.bottom) {
+        if (state.hoverZone &&
+            point.x >= state.hoverZone.left &&
+            point.x <= state.hoverZone.right &&
+            point.y >= state.hoverZone.top &&
+            point.y <= state.hoverZone.bottom) {
             return true;
         }
 
@@ -1314,27 +1315,17 @@ export default class LinkPreviewPlugin extends Plugin {
         return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
     }
 
-    private getInlinePreviewLineHoverRect(linkInfo: LinkInfo, point: ScreenPoint): ViewRect | null {
+    private getInlinePreviewLineHoverRect(linkInfo: LinkInfo): ViewRect | null {
         const lineElement = this.getInlinePreviewLineElement(linkInfo.element);
         const doc = linkInfo.element.ownerDocument;
         const win = doc.defaultView ?? window;
         const lineRect = lineElement ? this.toViewRect(lineElement.getBoundingClientRect()) : null;
         const linkRects = Array.from(linkInfo.element.getClientRects()).map((rect) => this.toViewRect(rect));
-        const relevantLinkRects = linkRects.filter((rect) =>
-            point.y >= rect.top - INLINE_CONTROLS_HOVER_PADDING_Y &&
-            point.y <= rect.bottom + INLINE_CONTROLS_HOVER_PADDING_Y
-        );
         const rects = [
             ...(lineRect ? [lineRect] : []),
-            ...(relevantLinkRects.length > 0 ? relevantLinkRects : linkRects),
+            ...linkRects,
         ].filter((rect) => rect.width > 0 && rect.height > 0);
         if (rects.length === 0) return null;
-
-        const editorRect = linkInfo.element.closest('.cm-editor')?.getBoundingClientRect();
-        const previewRect = linkInfo.element.closest('.markdown-preview-view')?.getBoundingClientRect();
-        const containerRect = editorRect ?? previewRect;
-        const left = containerRect ? Math.max(0, containerRect.left) : 0;
-        const right = containerRect ? Math.min(win.innerWidth, containerRect.right) : win.innerWidth;
 
         const top = Math.max(0, Math.min(...rects.map((rect) => rect.top)) - INLINE_CONTROLS_HOVER_PADDING_Y);
         const bottom = Math.min(
@@ -1345,10 +1336,10 @@ export default class LinkPreviewPlugin extends Plugin {
         return {
             bottom,
             height: Math.max(1, bottom - top),
-            left,
-            right,
+            left: 0,
+            right: win.innerWidth,
             top,
-            width: Math.max(1, right - left),
+            width: win.innerWidth,
         };
     }
 
@@ -1388,6 +1379,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (!state) return;
 
         state.container.removeClass('is-visible');
+        state.hoverZone = undefined;
         state.target = undefined;
     }
 

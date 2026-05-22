@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover card loading glow now always starts with the fallback card and sweeps left-right-left until details load.
 - Inline link action buttons now stay visible across the hovered visual line and use larger circular icons.
 - GitHub hover card loading beam now renders as a real card element instead of a pseudo-element.
+- Inline link action buttons now keep a full-width cached hover zone for the active link row.
 
 ## [0.5.0] - 2026-05-05
 
