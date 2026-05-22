@@ -44,9 +44,15 @@
     z-index: 19;
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 3px;
     opacity: 0;
     pointer-events: none;
+}
+
+.url-preview-inline-controls::before {
+    position: absolute;
+    inset: -10px -12px;
+    content: '';
 }
 
 .url-preview-inline-controls.is-visible {
@@ -64,14 +70,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
+    position: relative;
+    z-index: 1;
+    width: 20px;
+    height: 20px;
     margin: 0;
     padding: 0;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--radius-s);
+    border: none;
+    border-radius: 999px;
     background-color: var(--background-primary);
-    box-shadow: none;
+    box-shadow:
+        0 0 0 1px var(--background-modifier-border),
+        1px 1px 0 var(--background-modifier-border);
     color: var(--text-muted);
     cursor: pointer;
 }
@@ -83,14 +93,16 @@
 .url-preview-inline-button:hover,
 .url-preview-inline-button:focus,
 .url-preview-inline-button:focus-visible {
-    background-color: var(--background-secondary);
-    box-shadow: none;
+    background-color: var(--background-primary);
+    box-shadow:
+        0 0 0 1px var(--background-modifier-border),
+        1px 1px 0 var(--background-modifier-border);
     color: var(--interactive-accent);
 }
 
 .url-preview-inline-button svg {
-    width: 13px;
-    height: 13px;
+    width: 16px;
+    height: 16px;
 }
 
 /* Rendered GitHub pull request number shown beside GitHub PR links */

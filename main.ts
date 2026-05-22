@@ -153,7 +153,9 @@ interface ElectronModule {
 const MIN_PREVIEW_WIDTH = 200;
 const MIN_PREVIEW_HEIGHT = 150;
 const INLINE_CONTROLS_GAP = 4;
-const INLINE_CONTROLS_SIZE = 16;
+const INLINE_CONTROLS_HOVER_PADDING_X = 12;
+const INLINE_CONTROLS_HOVER_PADDING_Y = 10;
+const INLINE_CONTROLS_SIZE = 20;
 const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 120;
 const GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE = 10000;
 const GITHUB_HOVER_CARD_DELAY_MS = 250;
@@ -1289,16 +1291,68 @@ export default class LinkPreviewPlugin extends Plugin {
     private isPointInInlineControlsHoverZone(state: InlinePreviewControlsState, point: ScreenPoint): boolean {
         if (!state.target) return false;
 
+        const lineRect = this.getInlinePreviewLineHoverRect(state.target, point);
+        if (lineRect &&
+            point.x >= lineRect.left &&
+            point.x <= lineRect.right &&
+            point.y >= lineRect.top &&
+            point.y <= lineRect.bottom) {
+            return true;
+        }
+
         const linkRect = this.getInlinePreviewAnchorRect(state.target, point);
         const controlsRect = state.container.getBoundingClientRect();
         if (!linkRect || controlsRect.width === 0 || controlsRect.height === 0) return false;
 
-        const top = Math.min(linkRect.top, controlsRect.top) - INLINE_CONTROLS_GAP;
-        const bottom = Math.max(linkRect.bottom, controlsRect.bottom) + INLINE_CONTROLS_GAP;
-        const left = Math.min(linkRect.right, controlsRect.left) - INLINE_CONTROLS_GAP;
-        const right = controlsRect.right + INLINE_CONTROLS_GAP;
+        const top = Math.min(linkRect.top, controlsRect.top) - INLINE_CONTROLS_HOVER_PADDING_Y;
+        const bottom = Math.max(linkRect.bottom, controlsRect.bottom) + INLINE_CONTROLS_HOVER_PADDING_Y;
+        const left = Math.min(linkRect.right, controlsRect.left) - INLINE_CONTROLS_HOVER_PADDING_X;
+        const right = controlsRect.right + INLINE_CONTROLS_HOVER_PADDING_X;
 
         return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
+    }
+
+    private getInlinePreviewLineHoverRect(linkInfo: LinkInfo, point: ScreenPoint): ViewRect | null {
+        const lineElement = this.getInlinePreviewLineElement(linkInfo.element);
+        const doc = linkInfo.element.ownerDocument;
+        const win = doc.defaultView ?? window;
+        const lineRect = lineElement ? this.toViewRect(lineElement.getBoundingClientRect()) : null;
+        const linkRects = Array.from(linkInfo.element.getClientRects()).map((rect) => this.toViewRect(rect));
+        const relevantLinkRects = linkRects.filter((rect) =>
+            point.y >= rect.top - INLINE_CONTROLS_HOVER_PADDING_Y &&
+            point.y <= rect.bottom + INLINE_CONTROLS_HOVER_PADDING_Y
+        );
+        const rects = [
+            ...(lineRect ? [lineRect] : []),
+            ...(relevantLinkRects.length > 0 ? relevantLinkRects : linkRects),
+        ].filter((rect) => rect.width > 0 && rect.height > 0);
+        if (rects.length === 0) return null;
+
+        const editorRect = linkInfo.element.closest('.cm-editor')?.getBoundingClientRect();
+        const previewRect = linkInfo.element.closest('.markdown-preview-view')?.getBoundingClientRect();
+        const containerRect = editorRect ?? previewRect;
+        const left = containerRect ? Math.max(0, containerRect.left) : 0;
+        const right = containerRect ? Math.min(win.innerWidth, containerRect.right) : win.innerWidth;
+
+        const top = Math.max(0, Math.min(...rects.map((rect) => rect.top)) - INLINE_CONTROLS_HOVER_PADDING_Y);
+        const bottom = Math.min(
+            win.innerHeight,
+            Math.max(...rects.map((rect) => rect.bottom)) + INLINE_CONTROLS_HOVER_PADDING_Y
+        );
+
+        return {
+            bottom,
+            height: Math.max(1, bottom - top),
+            left,
+            right,
+            top,
+            width: Math.max(1, right - left),
+        };
+    }
+
+    private getInlinePreviewLineElement(element: HTMLElement): HTMLElement | null {
+        const lineElement = element.closest('.cm-line, li, p, h1, h2, h3, h4, h5, h6, td, th, blockquote');
+        return lineElement instanceof HTMLElement ? lineElement : null;
     }
 
     private canInlineConvertGitHubUrl(linkInfo: LinkInfo): boolean {
