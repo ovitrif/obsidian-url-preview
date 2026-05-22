@@ -117,6 +117,9 @@ interface GitHubHoverCardState {
     element: HTMLElement;
     key?: string;
     linkInfo?: LinkInfo;
+    loadingKey?: string;
+    loadingStartedAt?: number;
+    loadingTimeout?: number;
     pendingKey?: string;
     point?: ScreenPoint;
     reference?: GitHubIssueReference;
@@ -155,6 +158,7 @@ const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 120;
 const GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE = 10000;
 const GITHUB_HOVER_CARD_DELAY_MS = 250;
 const GITHUB_HOVER_CARD_GAP = 12;
+const GITHUB_HOVER_CARD_LOADING_MIN_MS = 800;
 const GITHUB_HOVER_CARD_MARGIN = 10;
 const MIN_PREVIEW_LOADING_MS = 750;
 const POST_LOAD_SPINNER_MS = 350;
@@ -820,6 +824,7 @@ export default class LinkPreviewPlugin extends Plugin {
         state.linkInfo = linkInfo;
         state.point = point;
         state.reference = reference;
+        this.stopGitHubHoverCardLoading(state);
         state.element.removeClass('is-visible');
 
         const win = doc.defaultView ?? window;
@@ -832,7 +837,9 @@ export default class LinkPreviewPlugin extends Plugin {
                 state.element,
                 this.createGitHubHoverCardFallbackData(state.linkInfo, state.reference)
             );
-            state.element.removeClass('is-loading');
+            if (this.shouldShowGitHubHoverCardLoading(state.linkInfo.url)) {
+                this.startGitHubHoverCardLoading(state, key);
+            }
             this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
             state.element.addClass('is-visible');
             void this.loadGitHubHoverCardData(state, state.linkInfo, state.reference, key);
@@ -862,7 +869,7 @@ export default class LinkPreviewPlugin extends Plugin {
         state.linkInfo = undefined;
         state.point = undefined;
         state.reference = undefined;
-        state.element.removeClass('is-loading');
+        this.stopGitHubHoverCardLoading(state);
         state.element.removeClass('is-visible');
     }
 
@@ -871,6 +878,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (!state) return;
 
         this.clearGitHubHoverCardTimer(state);
+        this.stopGitHubHoverCardLoading(state);
         state.element.remove();
         this.githubHoverCards.delete(doc);
     }
@@ -887,6 +895,51 @@ export default class LinkPreviewPlugin extends Plugin {
         return `${linkInfo.url}:${reference.shortReference}`;
     }
 
+    private shouldShowGitHubHoverCardLoading(url: string): boolean {
+        const cachedData = this.githubHoverCardDataCache.get(url);
+        return !cachedData || this.isPromiseLike(cachedData);
+    }
+
+    private startGitHubHoverCardLoading(state: GitHubHoverCardState, key: string) {
+        this.clearGitHubHoverCardLoadingTimer(state);
+        state.loadingKey = key;
+        state.loadingStartedAt = Date.now();
+        state.element.addClass('is-loading');
+    }
+
+    private finishGitHubHoverCardLoading(state: GitHubHoverCardState, key: string) {
+        if (state.loadingKey !== key) return;
+
+        const elapsed = Date.now() - (state.loadingStartedAt ?? Date.now());
+        const remaining = Math.max(0, GITHUB_HOVER_CARD_LOADING_MIN_MS - elapsed);
+        if (remaining === 0) {
+            this.stopGitHubHoverCardLoading(state);
+            return;
+        }
+
+        const win = state.element.ownerDocument.defaultView ?? window;
+        state.loadingTimeout = win.setTimeout(() => {
+            if (state.loadingKey === key) {
+                this.stopGitHubHoverCardLoading(state);
+            }
+        }, remaining);
+    }
+
+    private stopGitHubHoverCardLoading(state: GitHubHoverCardState) {
+        this.clearGitHubHoverCardLoadingTimer(state);
+        state.loadingKey = undefined;
+        state.loadingStartedAt = undefined;
+        state.element.removeClass('is-loading');
+    }
+
+    private clearGitHubHoverCardLoadingTimer(state: GitHubHoverCardState) {
+        if (!state.loadingTimeout) return;
+
+        const win = state.element.ownerDocument.defaultView ?? window;
+        win.clearTimeout(state.loadingTimeout);
+        state.loadingTimeout = undefined;
+    }
+
     private async loadGitHubHoverCardData(
         state: GitHubHoverCardState,
         linkInfo: LinkInfo,
@@ -895,17 +948,13 @@ export default class LinkPreviewPlugin extends Plugin {
     ) {
         const requestId = state.requestId + 1;
         state.requestId = requestId;
-        const cachedData = this.githubHoverCardDataCache.get(linkInfo.url);
-        if (!cachedData || this.isPromiseLike(cachedData)) {
-            state.element.addClass('is-loading');
-        }
 
         const data = await this.getGitHubHoverCardData(linkInfo, reference);
         if (state.requestId !== requestId || state.key !== key || !state.linkInfo || !state.point) return;
 
-        state.element.removeClass('is-loading');
         this.renderGitHubHoverCard(state.element, data);
         this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
+        this.finishGitHubHoverCardLoading(state, key);
     }
 
     private isPromiseLike(
