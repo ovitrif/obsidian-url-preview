@@ -954,6 +954,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private renderGitHubHoverCard(card: HTMLElement, data: GitHubHoverCardData) {
         card.empty();
+        const loadingBeam = card.createDiv('url-preview-github-hover-card-loading-beam');
+        loadingBeam.setAttr('aria-hidden', 'true');
 
         const header = card.createDiv('url-preview-github-hover-card-header');
         const repo = header.createSpan({ cls: 'url-preview-github-hover-card-repo', text: data.repoLabel });
