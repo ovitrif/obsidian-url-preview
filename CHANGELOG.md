@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored GitHub pull request badges on normal Live Preview links after tightening the folded-heading fix.
 - GitHub hover cards now show an animated bottom-edge glow while richer preview data is loading.
 - GitHub hover card loading glow now remains visible briefly even when preview data loads quickly.
+- GitHub hover card loading glow now always starts with the fallback card and sweeps left-right-left until details load.
 
 ## [0.5.0] - 2026-05-05
 
