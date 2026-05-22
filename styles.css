@@ -172,25 +172,18 @@
     z-index: 2;
     height: 4px;
     border-radius: 0 0 var(--radius-l) var(--radius-l);
-    background-image:
-        linear-gradient(
-            90deg,
-            rgba(62, 220, 246, 0.1),
-            rgba(94, 106, 210, 0.38),
-            rgba(62, 220, 246, 0.1)
-        ),
-        linear-gradient(
-            90deg,
-            transparent 0%,
-            rgba(62, 220, 246, 0.12) 18%,
-            rgba(62, 220, 246, 0.9) 42%,
-            rgba(94, 106, 210, 1) 54%,
-            rgba(62, 220, 246, 0.9) 66%,
-            transparent 100%
-        );
+    background-image: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(62, 220, 246, 0.12) 18%,
+        rgba(62, 220, 246, 0.9) 42%,
+        rgba(94, 106, 210, 1) 54%,
+        rgba(62, 220, 246, 0.9) 66%,
+        transparent 100%
+    );
     background-repeat: no-repeat;
-    background-size: 100% 100%, 38% 100%;
-    background-position: 0 0, -42% 0;
+    background-size: 38% 100%;
+    background-position: -42% 0;
     box-shadow: 0 0 0 rgba(94, 106, 210, 0);
     opacity: 0;
     pointer-events: none;
@@ -200,8 +193,8 @@
 .url-preview-github-hover-card.is-loading .url-preview-github-hover-card-loading-beam {
     animation: url-preview-github-hover-card-loading-beam 1.2s ease-in-out infinite alternate;
     box-shadow:
-        0 0 14px rgba(94, 106, 210, 0.96),
-        0 0 32px rgba(62, 220, 246, 0.42);
+        0 3px 12px rgba(94, 106, 210, 0.9),
+        0 6px 22px rgba(62, 220, 246, 0.34);
     opacity: 1;
 }
 
@@ -332,11 +325,11 @@
 
 @keyframes url-preview-github-hover-card-loading-beam {
     from {
-        background-position: 0 0, -42% 0;
+        background-position: -42% 0;
     }
 
     to {
-        background-position: 0 0, 142% 0;
+        background-position: 142% 0;
     }
 }
 
