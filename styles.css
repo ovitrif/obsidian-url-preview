@@ -165,35 +165,42 @@
 }
 
 .url-preview-github-hover-card-loading-beam {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    position: relative;
     z-index: 2;
-    height: 1px;
-    border-radius: 0 0 var(--radius-l) var(--radius-l);
-    background-image: radial-gradient(
-        ellipse at center,
-        var(--interactive-accent) 0%,
-        rgba(var(--interactive-accent-rgb), 0.82) 20%,
-        rgba(var(--interactive-accent-rgb), 0.28) 48%,
-        rgba(var(--interactive-accent-rgb), 0) 76%
-    );
-    background-repeat: no-repeat;
-    background-size: 30% 100%;
-    background-position: -34% 0;
-    filter: drop-shadow(0 0 0 rgba(var(--interactive-accent-rgb), 0));
+    height: 0;
     opacity: 0;
     pointer-events: none;
     transition: opacity 80ms ease;
 }
 
+.url-preview-github-hover-card-loading-beam-light {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: min(96px, 30%);
+    height: 1px;
+    border-radius: 999px;
+    background: radial-gradient(
+        ellipse at center,
+        var(--interactive-accent) 0%,
+        rgba(var(--interactive-accent-rgb), 0.86) 18%,
+        rgba(var(--interactive-accent-rgb), 0.36) 46%,
+        rgba(var(--interactive-accent-rgb), 0) 76%
+    );
+    filter: drop-shadow(0 0 0 rgba(var(--interactive-accent-rgb), 0));
+    transform: translateX(-110%);
+}
+
 .url-preview-github-hover-card.is-loading .url-preview-github-hover-card-loading-beam {
+    height: 1px;
+    opacity: 1;
+}
+
+.url-preview-github-hover-card.is-loading .url-preview-github-hover-card-loading-beam-light {
     animation: url-preview-github-hover-card-loading-beam 1.35s ease-in-out infinite alternate;
     filter:
-        drop-shadow(0 1px 4px rgba(var(--interactive-accent-rgb), 0.62))
-        drop-shadow(0 3px 10px rgba(var(--interactive-accent-rgb), 0.24));
-    opacity: 1;
+        drop-shadow(0 1px 3px rgba(var(--interactive-accent-rgb), 0.58))
+        drop-shadow(0 2px 8px rgba(var(--interactive-accent-rgb), 0.24));
 }
 
 .url-preview-github-hover-card.is-visible {
@@ -319,15 +326,34 @@
     color: var(--text-muted);
     font-size: var(--font-ui-small);
     line-height: 1.45;
+    overflow: hidden;
+    transform-origin: top;
+    animation: url-preview-github-hover-card-description-enter 180ms ease-out;
 }
 
 @keyframes url-preview-github-hover-card-loading-beam {
     from {
-        background-position: -34% 0;
+        left: 0;
+        transform: translateX(-110%);
     }
 
     to {
-        background-position: 134% 0;
+        left: 100%;
+        transform: translateX(10%);
+    }
+}
+
+@keyframes url-preview-github-hover-card-description-enter {
+    from {
+        clip-path: inset(0 0 100% 0);
+        opacity: 0;
+        transform: scaleY(0.96);
+    }
+
+    to {
+        clip-path: inset(0);
+        opacity: 1;
+        transform: scaleY(1);
     }
 }
 
