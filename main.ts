@@ -819,10 +819,9 @@ export default class LinkPreviewPlugin extends Plugin {
 
         if (state.key === key || state.pendingKey === key) {
             state.linkInfo = linkInfo;
-            state.point = point;
             state.reference = reference;
-            if (state.element.classList.contains('is-visible')) {
-                this.positionGitHubHoverCard(state.element, point);
+            if (!state.element.classList.contains('is-visible')) {
+                state.point = point;
             }
             return;
         }
