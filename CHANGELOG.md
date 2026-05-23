@@ -47,14 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview size input now matches the toolbar zoom control styling when unfocused.
 - GitHub pull request badges are hidden when the Markdown link text already includes the same `#123`.
 - Restored GitHub pull request badges on normal Live Preview links after tightening the folded-heading fix.
-- GitHub hover cards now show an animated bottom-edge glow while richer preview data is loading.
-- GitHub hover card loading glow now remains visible briefly even when preview data loads quickly.
-- GitHub hover card loading glow now always starts with the fallback card and sweeps left-right-left until details load.
+- GitHub hover cards now show an animated bottom-edge glow only while uncached preview details load.
 - Inline link action buttons now stay visible across the hovered visual line and use larger circular icons.
 - GitHub hover card loading beam now renders as a real card element instead of a pseudo-element.
 - Inline link action buttons now keep a full-width cached hover zone for the active link row.
 - Preview popups now use a stronger layered shadow so they stand out from the page behind them.
-- GitHub hover card loading beam now uses a single bottom-edge sweep without a secondary track.
+- GitHub hover card loading beam now uses the current Obsidian accent color as a slim single bottom-edge sweep.
 
 ## [0.5.0] - 2026-05-05
 

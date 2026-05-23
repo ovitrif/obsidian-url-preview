@@ -170,15 +170,15 @@
     bottom: 0;
     left: 0;
     z-index: 2;
-    height: 4px;
+    height: 1px;
     border-radius: 0 0 var(--radius-l) var(--radius-l);
     background-image: linear-gradient(
         90deg,
         transparent 0%,
-        rgba(62, 220, 246, 0.12) 18%,
-        rgba(62, 220, 246, 0.9) 42%,
-        rgba(94, 106, 210, 1) 54%,
-        rgba(62, 220, 246, 0.9) 66%,
+        rgba(var(--interactive-accent-rgb), 0.12) 18%,
+        rgba(var(--interactive-accent-rgb), 0.82) 42%,
+        var(--interactive-accent) 54%,
+        rgba(var(--interactive-accent-rgb), 0.82) 66%,
         transparent 100%
     );
     background-repeat: no-repeat;
@@ -193,8 +193,8 @@
 .url-preview-github-hover-card.is-loading .url-preview-github-hover-card-loading-beam {
     animation: url-preview-github-hover-card-loading-beam 1.2s ease-in-out infinite alternate;
     box-shadow:
-        0 3px 12px rgba(94, 106, 210, 0.9),
-        0 6px 22px rgba(62, 220, 246, 0.34);
+        0 2px 8px rgba(var(--interactive-accent-rgb), 0.72),
+        0 5px 18px rgba(var(--interactive-accent-rgb), 0.28);
     opacity: 1;
 }
 
