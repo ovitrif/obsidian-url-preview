@@ -326,6 +326,12 @@
     animation: url-preview-github-hover-card-description-enter 180ms ease-out;
 }
 
+.url-preview-github-hover-card.is-measuring .url-preview-github-hover-card-description-shell {
+    max-height: none;
+    animation: none;
+    opacity: 1;
+}
+
 .url-preview-github-hover-card-description {
     padding-top: 12px;
     padding-bottom: 14px;

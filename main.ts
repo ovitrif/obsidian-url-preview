@@ -997,7 +997,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private positionGitHubHoverCard(card: HTMLElement, point: ScreenPoint) {
         const win = card.ownerDocument.defaultView ?? window;
-        const cardRect = card.getBoundingClientRect();
+        const cardRect = this.measureGitHubHoverCard(card);
         const cardWidth = cardRect.width || Math.min(420, win.innerWidth - GITHUB_HOVER_CARD_MARGIN * 2);
         const cardHeight = cardRect.height || 160;
         const maxLeft = Math.max(GITHUB_HOVER_CARD_MARGIN, win.innerWidth - cardWidth - GITHUB_HOVER_CARD_MARGIN);
@@ -1028,6 +1028,17 @@ export default class LinkPreviewPlugin extends Plugin {
         card.setCssProps({
             '--url-preview-github-hover-card-anchor-x': `${Math.max(12, Math.min(point.x - left, cardWidth - 12))}px`,
         });
+    }
+
+    private measureGitHubHoverCard(card: HTMLElement): DOMRect {
+        const wasMeasuring = card.classList.contains('is-measuring');
+        card.addClass('is-measuring');
+        const rect = card.getBoundingClientRect();
+        if (!wasMeasuring) {
+            card.removeClass('is-measuring');
+        }
+
+        return rect;
     }
 
     private createGitHubHoverCardFallbackData(
