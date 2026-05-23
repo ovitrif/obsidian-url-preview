@@ -116,6 +116,7 @@ interface GitHubHoverCardData {
 
 interface GitHubHoverCardState {
     element: HTMLElement;
+    hideTimeout?: number;
     key?: string;
     linkInfo?: LinkInfo;
     loadingKey?: string;
@@ -159,6 +160,7 @@ const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 120;
 const GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE = 10000;
 const GITHUB_HOVER_CARD_DELAY_MS = 250;
 const GITHUB_HOVER_CARD_GAP = 12;
+const GITHUB_HOVER_CARD_HIDE_DELAY_MS = 300;
 const GITHUB_HOVER_CARD_MARGIN = 10;
 const MIN_PREVIEW_LOADING_MS = 750;
 const POST_LOAD_SPINNER_MS = 350;
@@ -784,15 +786,21 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
+        const state = this.githubHoverCards.get(doc);
+        if (state?.element.contains(target)) {
+            this.clearGitHubHoverCardHideTimer(state);
+            return;
+        }
+
         const linkInfo = this.findLinkElement(target, null, point);
         if (!linkInfo) {
-            this.hideGitHubHoverCard(doc);
+            this.scheduleGitHubHoverCardHide(doc);
             return;
         }
 
         const reference = this.getGitHubIssueReference(linkInfo.url);
         if (!reference) {
-            this.hideGitHubHoverCard(doc);
+            this.scheduleGitHubHoverCardHide(doc);
             return;
         }
 
@@ -807,13 +815,14 @@ export default class LinkPreviewPlugin extends Plugin {
     ) {
         const state = this.getGitHubHoverCard(doc);
         const key = this.getGitHubHoverCardKey(linkInfo, reference);
+        this.clearGitHubHoverCardHideTimer(state);
 
         if (state.key === key || state.pendingKey === key) {
             state.linkInfo = linkInfo;
             state.point = point;
             state.reference = reference;
             if (state.element.classList.contains('is-visible')) {
-                this.positionGitHubHoverCard(state.element, linkInfo, point);
+                this.positionGitHubHoverCard(state.element, point);
             }
             return;
         }
@@ -844,7 +853,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.startGitHubHoverCardLoading(state, key);
                 void this.loadGitHubHoverCardData(state, state.linkInfo, state.reference, key);
             }
-            this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
+            this.positionGitHubHoverCard(state.element, state.point);
             state.element.addClass('is-visible');
         }, GITHUB_HOVER_CARD_DELAY_MS);
     }
@@ -867,6 +876,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (!state) return;
 
         this.clearGitHubHoverCardTimer(state);
+        this.clearGitHubHoverCardHideTimer(state);
         state.key = undefined;
         state.pendingKey = undefined;
         state.linkInfo = undefined;
@@ -881,6 +891,7 @@ export default class LinkPreviewPlugin extends Plugin {
         if (!state) return;
 
         this.clearGitHubHoverCardTimer(state);
+        this.clearGitHubHoverCardHideTimer(state);
         this.stopGitHubHoverCardLoading(state);
         state.element.remove();
         this.githubHoverCards.delete(doc);
@@ -892,6 +903,25 @@ export default class LinkPreviewPlugin extends Plugin {
         const win = state.element.ownerDocument.defaultView ?? window;
         win.clearTimeout(state.showTimeout);
         state.showTimeout = undefined;
+    }
+
+    private scheduleGitHubHoverCardHide(doc: Document) {
+        const state = this.githubHoverCards.get(doc);
+        if (!state) return;
+
+        this.clearGitHubHoverCardHideTimer(state);
+        const win = state.element.ownerDocument.defaultView ?? window;
+        state.hideTimeout = win.setTimeout(() => {
+            this.hideGitHubHoverCard(doc);
+        }, GITHUB_HOVER_CARD_HIDE_DELAY_MS);
+    }
+
+    private clearGitHubHoverCardHideTimer(state: GitHubHoverCardState) {
+        if (!state.hideTimeout) return;
+
+        const win = state.element.ownerDocument.defaultView ?? window;
+        win.clearTimeout(state.hideTimeout);
+        state.hideTimeout = undefined;
     }
 
     private getGitHubHoverCardKey(linkInfo: LinkInfo, reference: GitHubIssueReference): string {
@@ -928,7 +958,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
         this.finishGitHubHoverCardLoading(state, key);
         this.renderGitHubHoverCard(state.element, data);
-        this.positionGitHubHoverCard(state.element, state.linkInfo, state.point);
+        this.positionGitHubHoverCard(state.element, state.point);
     }
 
     private renderGitHubHoverCard(card: HTMLElement, data: GitHubHoverCardData) {
@@ -956,7 +986,8 @@ export default class LinkPreviewPlugin extends Plugin {
         }
 
         if (data.description) {
-            card.createDiv({ cls: 'url-preview-github-hover-card-description', text: data.description });
+            const descriptionShell = card.createDiv('url-preview-github-hover-card-description-shell');
+            descriptionShell.createDiv({ cls: 'url-preview-github-hover-card-description', text: data.description });
         }
 
         const loadingBeam = card.createDiv('url-preview-github-hover-card-loading-beam');
@@ -964,10 +995,7 @@ export default class LinkPreviewPlugin extends Plugin {
         loadingBeam.createDiv('url-preview-github-hover-card-loading-beam-light');
     }
 
-    private positionGitHubHoverCard(card: HTMLElement, linkInfo: LinkInfo, point: ScreenPoint) {
-        const rect = this.getInlinePreviewAnchorRect(linkInfo, point) ?? this.getClientRectForPoint(linkInfo.element, point);
-        if (!rect) return;
-
+    private positionGitHubHoverCard(card: HTMLElement, point: ScreenPoint) {
         const win = card.ownerDocument.defaultView ?? window;
         const cardRect = card.getBoundingClientRect();
         const cardWidth = cardRect.width || Math.min(420, win.innerWidth - GITHUB_HOVER_CARD_MARGIN * 2);
@@ -975,16 +1003,20 @@ export default class LinkPreviewPlugin extends Plugin {
         const maxLeft = Math.max(GITHUB_HOVER_CARD_MARGIN, win.innerWidth - cardWidth - GITHUB_HOVER_CARD_MARGIN);
         const left = Math.max(
             GITHUB_HOVER_CARD_MARGIN,
-            Math.min(rect.left + rect.width / 2 - cardWidth / 2, maxLeft)
+            Math.min(point.x - cardWidth / 2, maxLeft)
         );
-        const showAbove = rect.top >= cardHeight + GITHUB_HOVER_CARD_GAP + GITHUB_HOVER_CARD_MARGIN;
-        const top = showAbove
-            ? rect.top - cardHeight - GITHUB_HOVER_CARD_GAP
-            : Math.min(rect.bottom + GITHUB_HOVER_CARD_GAP, win.innerHeight - cardHeight - GITHUB_HOVER_CARD_MARGIN);
+        const canFitBelow = point.y + GITHUB_HOVER_CARD_GAP + cardHeight + GITHUB_HOVER_CARD_MARGIN <= win.innerHeight;
+        const canFitAbove = point.y - GITHUB_HOVER_CARD_GAP - cardHeight >= GITHUB_HOVER_CARD_MARGIN;
+        const showAbove = !canFitBelow && canFitAbove;
+        const unclampedTop = showAbove
+            ? point.y - cardHeight - GITHUB_HOVER_CARD_GAP
+            : point.y + GITHUB_HOVER_CARD_GAP;
+        const maxTop = win.innerHeight - cardHeight - GITHUB_HOVER_CARD_MARGIN;
+        const top = Math.max(GITHUB_HOVER_CARD_MARGIN, Math.min(unclampedTop, maxTop));
 
         card.setCssStyles({
             left: `${left}px`,
-            top: `${Math.max(GITHUB_HOVER_CARD_MARGIN, top)}px`,
+            top: `${top}px`,
         });
         if (showAbove) {
             card.addClass('is-above');
@@ -994,7 +1026,7 @@ export default class LinkPreviewPlugin extends Plugin {
             card.removeClass('is-above');
         }
         card.setCssProps({
-            '--url-preview-github-hover-card-anchor-x': `${rect.left + rect.width / 2 - left}px`,
+            '--url-preview-github-hover-card-anchor-x': `${Math.max(12, Math.min(point.x - left, cardWidth - 12))}px`,
         });
     }
 

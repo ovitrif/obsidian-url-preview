@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview popups now use a stronger layered shadow so they stand out from the page behind them.
 - GitHub hover card loading beam now uses a one-pixel radial accent glow that moves along the bottom edge.
 - GitHub hover card excerpts now reveal with a short vertical expansion animation.
+- GitHub hover cards now prefer opening below the cursor and remain open while moving the pointer onto them.
 
 ## [0.5.0] - 2026-05-05
 

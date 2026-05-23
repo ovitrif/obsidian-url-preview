@@ -205,6 +205,7 @@
 
 .url-preview-github-hover-card.is-visible {
     opacity: 1;
+    pointer-events: auto;
     transform: translateY(0);
 }
 
@@ -232,7 +233,7 @@
 .url-preview-github-hover-card-header,
 .url-preview-github-hover-card-title-row,
 .url-preview-github-hover-card-meta,
-.url-preview-github-hover-card-description {
+.url-preview-github-hover-card-description-shell {
     padding-right: 14px;
     padding-left: 14px;
 }
@@ -319,16 +320,18 @@
     color: var(--color-red);
 }
 
+.url-preview-github-hover-card-description-shell {
+    overflow: hidden;
+    border-top: 1px solid var(--background-modifier-border);
+    animation: url-preview-github-hover-card-description-enter 180ms ease-out;
+}
+
 .url-preview-github-hover-card-description {
     padding-top: 12px;
     padding-bottom: 14px;
-    border-top: 1px solid var(--background-modifier-border);
     color: var(--text-muted);
     font-size: var(--font-ui-small);
     line-height: 1.45;
-    overflow: hidden;
-    transform-origin: top;
-    animation: url-preview-github-hover-card-description-enter 180ms ease-out;
 }
 
 @keyframes url-preview-github-hover-card-loading-beam {
@@ -345,15 +348,13 @@
 
 @keyframes url-preview-github-hover-card-description-enter {
     from {
-        clip-path: inset(0 0 100% 0);
+        max-height: 0;
         opacity: 0;
-        transform: scaleY(0.96);
     }
 
     to {
-        clip-path: inset(0);
+        max-height: 140px;
         opacity: 1;
-        transform: scaleY(1);
     }
 }
 
