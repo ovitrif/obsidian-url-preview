@@ -209,27 +209,6 @@
     transform: translateY(0);
 }
 
-.url-preview-github-hover-card::after {
-    position: absolute;
-    left: var(--url-preview-github-hover-card-anchor-x, 50%);
-    width: 10px;
-    height: 10px;
-    border-right: 1px solid var(--background-modifier-border);
-    border-bottom: 1px solid var(--background-modifier-border);
-    background-color: var(--background-primary);
-    content: '';
-    transform: translateX(-50%) rotate(45deg);
-}
-
-.url-preview-github-hover-card.is-above::after {
-    bottom: -6px;
-}
-
-.url-preview-github-hover-card.is-below::after {
-    top: -6px;
-    transform: translateX(-50%) rotate(225deg);
-}
-
 .url-preview-github-hover-card-header,
 .url-preview-github-hover-card-title-row,
 .url-preview-github-hover-card-meta,

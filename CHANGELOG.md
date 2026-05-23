@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover card excerpts now reveal with a short vertical expansion animation.
 - GitHub hover cards now prefer opening below the cursor and remain open while moving the pointer onto them.
 - GitHub hover cards now measure expanded excerpt height before deciding whether to open above or below.
+- GitHub hover cards no longer render a caret, keeping the shape as a rounded rectangle.
 
 ## [0.5.0] - 2026-05-05
 

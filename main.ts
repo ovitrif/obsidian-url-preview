@@ -1018,16 +1018,6 @@ export default class LinkPreviewPlugin extends Plugin {
             left: `${left}px`,
             top: `${top}px`,
         });
-        if (showAbove) {
-            card.addClass('is-above');
-            card.removeClass('is-below');
-        } else {
-            card.addClass('is-below');
-            card.removeClass('is-above');
-        }
-        card.setCssProps({
-            '--url-preview-github-hover-card-anchor-x': `${Math.max(12, Math.min(point.x - left, cardWidth - 12))}px`,
-        });
     }
 
     private measureGitHubHoverCard(card: HTMLElement): DOMRect {
