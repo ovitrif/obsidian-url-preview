@@ -172,29 +172,27 @@
     z-index: 2;
     height: 1px;
     border-radius: 0 0 var(--radius-l) var(--radius-l);
-    background-image: linear-gradient(
-        90deg,
-        transparent 0%,
-        rgba(var(--interactive-accent-rgb), 0.12) 18%,
-        rgba(var(--interactive-accent-rgb), 0.82) 42%,
-        var(--interactive-accent) 54%,
-        rgba(var(--interactive-accent-rgb), 0.82) 66%,
-        transparent 100%
+    background-image: radial-gradient(
+        ellipse at center,
+        var(--interactive-accent) 0%,
+        rgba(var(--interactive-accent-rgb), 0.82) 20%,
+        rgba(var(--interactive-accent-rgb), 0.28) 48%,
+        rgba(var(--interactive-accent-rgb), 0) 76%
     );
     background-repeat: no-repeat;
-    background-size: 38% 100%;
-    background-position: -42% 0;
-    box-shadow: 0 0 0 rgba(94, 106, 210, 0);
+    background-size: 30% 100%;
+    background-position: -34% 0;
+    filter: drop-shadow(0 0 0 rgba(var(--interactive-accent-rgb), 0));
     opacity: 0;
     pointer-events: none;
     transition: opacity 80ms ease;
 }
 
 .url-preview-github-hover-card.is-loading .url-preview-github-hover-card-loading-beam {
-    animation: url-preview-github-hover-card-loading-beam 1.2s ease-in-out infinite alternate;
-    box-shadow:
-        0 2px 8px rgba(var(--interactive-accent-rgb), 0.72),
-        0 5px 18px rgba(var(--interactive-accent-rgb), 0.28);
+    animation: url-preview-github-hover-card-loading-beam 1.35s ease-in-out infinite alternate;
+    filter:
+        drop-shadow(0 1px 4px rgba(var(--interactive-accent-rgb), 0.62))
+        drop-shadow(0 3px 10px rgba(var(--interactive-accent-rgb), 0.24));
     opacity: 1;
 }
 
@@ -325,11 +323,11 @@
 
 @keyframes url-preview-github-hover-card-loading-beam {
     from {
-        background-position: -42% 0;
+        background-position: -34% 0;
     }
 
     to {
-        background-position: 142% 0;
+        background-position: 134% 0;
     }
 }
 
