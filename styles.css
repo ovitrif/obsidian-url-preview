@@ -82,10 +82,10 @@
     margin: 0;
     padding: 0;
     border: 0;
-    border-radius: 0;
+    border-radius: 999px;
     outline: 0;
-    background: transparent;
-    background-color: transparent;
+    background: var(--background-primary);
+    background-color: var(--background-primary);
     box-shadow: none;
     color: var(--text-muted);
     cursor: pointer;
@@ -100,8 +100,8 @@
 .url-preview-inline-controls button.url-preview-inline-button:focus-visible {
     border: 0;
     outline: 0;
-    background: transparent;
-    background-color: transparent;
+    background: var(--background-primary);
+    background-color: var(--background-primary);
     box-shadow: none;
     color: var(--interactive-accent);
 }
