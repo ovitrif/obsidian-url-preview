@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline link action buttons now appear when hovering anywhere on the same visual line as a link.
 - Inline link action buttons now render without border or shadow chrome.
 - GitHub hover cards now require the configured preview modifier keys while hovering the link itself.
+- GitHub hover cards now stay open after modifier release while the pointer remains on the link line or card.
 
 ## [0.5.0] - 2026-05-05
 

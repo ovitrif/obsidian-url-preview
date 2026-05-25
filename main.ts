@@ -117,6 +117,7 @@ interface GitHubHoverCardData {
 interface GitHubHoverCardState {
     element: HTMLElement;
     hideTimeout?: number;
+    hoverZone?: ViewRect;
     key?: string;
     linkInfo?: LinkInfo;
     loadingKey?: string;
@@ -792,14 +793,11 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private updateGitHubHoverCardAtPoint(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
-        if (!this.areConfiguredModifiersPressed(modifiers)) {
-            this.hideGitHubHoverCard(doc);
-            return;
-        }
-
         const target = doc.elementFromPoint(point.x, point.y);
+        const state = this.githubHoverCards.get(doc);
+
         if (!(target instanceof Element)) {
-            this.hideGitHubHoverCard(doc);
+            this.scheduleGitHubHoverCardHide(doc);
             return;
         }
 
@@ -808,9 +806,13 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
-        const state = this.githubHoverCards.get(doc);
-        if (state?.element.contains(target)) {
+        if (state?.element.contains(target) || (state && this.isPointInGitHubHoverCardHoverZone(state, point))) {
             this.clearGitHubHoverCardHideTimer(state);
+            return;
+        }
+
+        if (!this.areConfiguredModifiersPressed(modifiers)) {
+            this.scheduleGitHubHoverCardHide(doc);
             return;
         }
 
@@ -841,6 +843,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
         if (state.key === key || state.pendingKey === key) {
             state.linkInfo = linkInfo;
+            state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
             state.reference = reference;
             if (!state.element.classList.contains('is-visible')) {
                 state.point = point;
@@ -851,6 +854,7 @@ export default class LinkPreviewPlugin extends Plugin {
         this.clearGitHubHoverCardTimer(state);
         state.key = undefined;
         state.pendingKey = key;
+        state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
         state.linkInfo = linkInfo;
         state.point = point;
         state.reference = reference;
@@ -900,6 +904,7 @@ export default class LinkPreviewPlugin extends Plugin {
         this.clearGitHubHoverCardHideTimer(state);
         state.key = undefined;
         state.pendingKey = undefined;
+        state.hoverZone = undefined;
         state.linkInfo = undefined;
         state.point = undefined;
         state.reference = undefined;
@@ -943,6 +948,20 @@ export default class LinkPreviewPlugin extends Plugin {
         const win = state.element.ownerDocument.defaultView ?? window;
         win.clearTimeout(state.hideTimeout);
         state.hideTimeout = undefined;
+    }
+
+    private isPointInGitHubHoverCardHoverZone(state: GitHubHoverCardState, point: ScreenPoint): boolean {
+        if (!state.linkInfo && !state.hoverZone) return false;
+
+        const hoverZone = state.hoverZone ?? (
+            state.linkInfo ? this.getInlinePreviewLineHoverRect(state.linkInfo) : null
+        );
+        if (!hoverZone) return false;
+
+        return point.x >= hoverZone.left &&
+            point.x <= hoverZone.right &&
+            point.y >= hoverZone.top &&
+            point.y <= hoverZone.bottom;
     }
 
     private getGitHubHoverCardKey(linkInfo: LinkInfo, reference: GitHubIssueReference): string {
