@@ -422,12 +422,16 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 if (e.key === 'Escape') {
                     this.hideGitHubHoverCard(doc);
+                    this.updateModifierPreviewTooltipFromEvent(doc, e);
+                    return;
                 }
+                this.updateGitHubHoverCardAtPoint(doc, { x: this.lastMouseX, y: this.lastMouseY }, this.getModifierState(e));
                 this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
-            this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) =>
-                this.updateModifierPreviewTooltipFromEvent(doc, e)
-            );
+            this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
+                this.updateGitHubHoverCardAtPoint(doc, { x: this.lastMouseX, y: this.lastMouseY }, this.getModifierState(e));
+                this.updateModifierPreviewTooltipFromEvent(doc, e);
+            });
             const win = doc.defaultView;
             if (win) {
                 this.registerDomEvent(win, 'blur', () => {
@@ -708,7 +712,8 @@ export default class LinkPreviewPlugin extends Plugin {
             return;
         }
 
-        const linkInfo = this.findLinkElement(target, null, point);
+        const linkInfo = this.findLinkElement(target, null, point) ??
+            this.findInlinePreviewLineLinkElement(target, point);
         if (!linkInfo) {
             this.hideInlinePreviewControls(doc);
             return;
@@ -779,8 +784,25 @@ export default class LinkPreviewPlugin extends Plugin {
         const target = event.target;
         if (!(target instanceof Element)) return;
 
-        const doc = target.ownerDocument;
-        const point = { x: event.clientX, y: event.clientY };
+        this.updateGitHubHoverCardAtPoint(
+            target.ownerDocument,
+            { x: event.clientX, y: event.clientY },
+            this.getModifierState(event)
+        );
+    }
+
+    private updateGitHubHoverCardAtPoint(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
+        if (!this.areConfiguredModifiersPressed(modifiers)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        const target = doc.elementFromPoint(point.x, point.y);
+        if (!(target instanceof Element)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
         if (this.activePreview?.doc === doc || this.activePreview?.element.contains(target)) {
             this.hideGitHubHoverCard(doc);
             return;
@@ -1360,6 +1382,66 @@ export default class LinkPreviewPlugin extends Plugin {
             top,
             width: win.innerWidth,
         };
+    }
+
+    private findInlinePreviewLineLinkElement(target: Element, point: ScreenPoint): LinkInfo | null {
+        if (!(target instanceof HTMLElement)) return null;
+
+        const lineElement = this.getInlinePreviewLineElement(target);
+        if (!lineElement) return null;
+
+        let nearestLinkInfo: LinkInfo | null = null;
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        const linkElements = Array.from(lineElement.querySelectorAll(EDITOR_LINK_SELECTOR));
+
+        for (const linkElement of linkElements) {
+            if (!(linkElement instanceof HTMLElement)) continue;
+
+            const linkRect = this.getInlinePreviewLineLinkRect(linkElement, point);
+            if (!linkRect) continue;
+
+            const candidatePoint = {
+                x: linkRect.left + linkRect.width / 2,
+                y: linkRect.top + linkRect.height / 2,
+            };
+            const linkInfo = this.findLinkElement(linkElement, null, candidatePoint);
+            if (!linkInfo) continue;
+
+            const distance = point.x < linkRect.left
+                ? linkRect.left - point.x
+                : Math.max(0, point.x - linkRect.right);
+            if (distance >= nearestDistance) continue;
+
+            nearestDistance = distance;
+            nearestLinkInfo = linkInfo;
+        }
+
+        return nearestLinkInfo;
+    }
+
+    private getInlinePreviewLineLinkRect(element: HTMLElement, point: ScreenPoint): ViewRect | null {
+        const rects = Array.from(element.getClientRects())
+            .map((rect) => this.toViewRect(rect))
+            .filter((rect) =>
+                rect.width > 0 &&
+                rect.height > 0 &&
+                point.y >= rect.top - INLINE_CONTROLS_HOVER_PADDING_Y &&
+                point.y <= rect.bottom + INLINE_CONTROLS_HOVER_PADDING_Y
+            );
+
+        if (rects.length === 0) return null;
+
+        return rects.reduce((nearest, rect) => {
+            const nearestDistance = this.getHorizontalDistanceToRect(point, nearest);
+            const distance = this.getHorizontalDistanceToRect(point, rect);
+            return distance < nearestDistance ? rect : nearest;
+        });
+    }
+
+    private getHorizontalDistanceToRect(point: ScreenPoint, rect: ViewRect): number {
+        if (point.x < rect.left) return rect.left - point.x;
+        if (point.x > rect.right) return point.x - rect.right;
+        return 0;
     }
 
     private getInlinePreviewLineElement(element: HTMLElement): HTMLElement | null {

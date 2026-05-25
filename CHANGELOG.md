@@ -58,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover cards now measure expanded excerpt height before deciding whether to open above or below.
 - GitHub hover cards no longer render a caret, keeping the shape as a rounded rectangle.
 - GitHub hover cards now stay pinned after opening instead of following every mouse movement.
+- Inline link action buttons now appear when hovering anywhere on the same visual line as a link.
+- Inline link action buttons now render without border or shadow chrome.
+- GitHub hover cards now require the configured preview modifier keys while hovering the link itself.
 
 ## [0.5.0] - 2026-05-05
 

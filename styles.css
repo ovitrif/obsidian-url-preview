@@ -81,10 +81,8 @@
     padding: 0;
     border: none;
     border-radius: 999px;
-    background-color: var(--background-primary);
-    box-shadow:
-        0 0 0 1px var(--background-modifier-border),
-        1px 1px 0 var(--background-modifier-border);
+    background-color: transparent;
+    box-shadow: none;
     color: var(--text-muted);
     cursor: pointer;
 }
@@ -96,10 +94,8 @@
 .url-preview-inline-button:hover,
 .url-preview-inline-button:focus,
 .url-preview-inline-button:focus-visible {
-    background-color: var(--background-primary);
-    box-shadow:
-        0 0 0 1px var(--background-modifier-border),
-        1px 1px 0 var(--background-modifier-border);
+    background-color: transparent;
+    box-shadow: none;
     color: var(--interactive-accent);
 }
 
