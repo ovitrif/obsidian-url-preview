@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover cards now require the configured preview modifier keys while hovering the link itself.
 - GitHub hover cards now stay open after modifier release while the pointer remains on the link line or card.
 - Bundled the Flow Circular font locally for GitHub hover card skeleton placeholders.
+- GitHub hover card skeletons now inline the Flow Circular font and avoid readable placeholder text.
+- GitHub hover cards no longer apply the legacy loading class that could draw an accent loading bar.
 
 ## [0.5.0] - 2026-05-05
 

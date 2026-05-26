@@ -971,7 +971,6 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private startGitHubHoverCardLoading(state: GitHubHoverCardState, key: string) {
         state.loadingKey = key;
-        state.element.addClass('is-loading');
     }
 
     private finishGitHubHoverCardLoading(state: GitHubHoverCardState, key: string) {
@@ -982,7 +981,6 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private stopGitHubHoverCardLoading(state: GitHubHoverCardState) {
         state.loadingKey = undefined;
-        state.element.removeClass('is-loading');
     }
 
     private async loadGitHubHoverCardData(
@@ -1037,10 +1035,11 @@ export default class LinkPreviewPlugin extends Plugin {
             const descriptionShell = card.createDiv(
                 'url-preview-github-hover-card-description-shell is-skeleton'
             );
-            descriptionShell.createDiv({
+            const skeleton = descriptionShell.createDiv({
                 cls: 'url-preview-github-hover-card-description-skeleton',
-                text: 'This pull request summary appears here while GitHub details load. The preview keeps the same line count.',
+                text: 'mmmmmmmmm mmmmmmmm mmmmmmmmm mmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmm',
             });
+            skeleton.setAttr('aria-hidden', 'true');
         }
     }
 
