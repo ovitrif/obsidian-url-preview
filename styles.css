@@ -190,25 +190,20 @@
 }
 
 .url-preview-github-hover-card-header {
-    display: flex;
-    gap: 6px;
-    align-items: baseline;
-    min-width: 0;
+    overflow: hidden;
     padding-top: 12px;
     color: var(--text-muted);
     font-size: var(--font-ui-small);
-}
-
-.url-preview-github-hover-card-repo {
-    overflow: hidden;
-    min-width: 0;
-    font-weight: var(--font-medium);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
+.url-preview-github-hover-card-repo {
+    font-weight: var(--font-medium);
+}
+
 .url-preview-github-hover-card-id {
-    flex: 0 0 auto;
+    margin-left: 0.35em;
 }
 
 .url-preview-github-hover-card-title-row {
