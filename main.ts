@@ -873,7 +873,8 @@ export default class LinkPreviewPlugin extends Plugin {
             } else {
                 this.renderGitHubHoverCard(
                     state.element,
-                    this.createGitHubHoverCardFallbackData(state.linkInfo, state.reference)
+                    this.createGitHubHoverCardFallbackData(state.linkInfo, state.reference),
+                    { showDescriptionSkeleton: true }
                 );
                 this.startGitHubHoverCardLoading(state, key);
                 void this.loadGitHubHoverCardData(state, state.linkInfo, state.reference, key);
@@ -1001,7 +1002,11 @@ export default class LinkPreviewPlugin extends Plugin {
         this.positionGitHubHoverCard(state.element, state.point);
     }
 
-    private renderGitHubHoverCard(card: HTMLElement, data: GitHubHoverCardData) {
+    private renderGitHubHoverCard(
+        card: HTMLElement,
+        data: GitHubHoverCardData,
+        options: { showDescriptionSkeleton?: boolean } = {}
+    ) {
         card.empty();
 
         const header = card.createDiv('url-preview-github-hover-card-header');
@@ -1028,11 +1033,15 @@ export default class LinkPreviewPlugin extends Plugin {
         if (data.description) {
             const descriptionShell = card.createDiv('url-preview-github-hover-card-description-shell');
             descriptionShell.createDiv({ cls: 'url-preview-github-hover-card-description', text: data.description });
+        } else if (options.showDescriptionSkeleton) {
+            const descriptionShell = card.createDiv(
+                'url-preview-github-hover-card-description-shell is-skeleton'
+            );
+            descriptionShell.createDiv({
+                cls: 'url-preview-github-hover-card-description-skeleton',
+                text: 'This pull request summary appears here while GitHub details load. The preview keeps the same line count.',
+            });
         }
-
-        const loadingBeam = card.createDiv('url-preview-github-hover-card-loading-beam');
-        loadingBeam.setAttr('aria-hidden', 'true');
-        loadingBeam.createDiv('url-preview-github-hover-card-loading-beam-light');
     }
 
     private positionGitHubHoverCard(card: HTMLElement, point: ScreenPoint) {

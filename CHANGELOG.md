@@ -47,13 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview size input now matches the toolbar zoom control styling when unfocused.
 - GitHub pull request badges are hidden when the Markdown link text already includes the same `#123`.
 - Restored GitHub pull request badges on normal Live Preview links after tightening the folded-heading fix.
-- GitHub hover cards now show an animated bottom-edge glow only while uncached preview details load.
+- GitHub hover cards now show a Flow Circular skeleton shimmer only while uncached preview details load.
 - Inline link action buttons now stay visible across the hovered visual line and use larger circular icons.
-- GitHub hover card loading beam now renders as a real card element instead of a pseudo-element.
 - Inline link action buttons now keep a full-width cached hover zone for the active link row.
 - Preview popups now use a stronger layered shadow so they stand out from the page behind them.
-- GitHub hover card loading beam now uses a one-pixel radial accent glow that moves along the bottom edge.
-- GitHub hover card excerpts now reveal with a short vertical expansion animation.
+- GitHub hover card excerpts now fade in after the loading skeleton is replaced.
 - GitHub hover cards now prefer opening below the cursor and remain open while moving the pointer onto them.
 - GitHub hover cards now measure expanded excerpt height before deciding whether to open above or below.
 - GitHub hover cards no longer render a caret, keeping the shape as a rounded rectangle.
@@ -62,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline link action buttons now render without border or shadow chrome.
 - GitHub hover cards now require the configured preview modifier keys while hovering the link itself.
 - GitHub hover cards now stay open after modifier release while the pointer remains on the link line or card.
+- Bundled the Flow Circular font locally for GitHub hover card skeleton placeholders.
 
 ## [0.5.0] - 2026-05-05
 

@@ -1,3 +1,11 @@
+@font-face {
+    font-family: 'URL Preview Flow Circular';
+    font-style: normal;
+    font-weight: 400;
+    src: url('assets/fonts/FlowCircular-Regular.ttf') format('truetype');
+    font-display: block;
+}
+
 /* Main preview container */
 .hover-popup {
     background-color: var(--background-primary);
@@ -167,45 +175,6 @@
     transition: opacity 120ms ease, transform 120ms ease;
 }
 
-.url-preview-github-hover-card-loading-beam {
-    position: relative;
-    z-index: 2;
-    height: 0;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 80ms ease;
-}
-
-.url-preview-github-hover-card-loading-beam-light {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    width: min(96px, 30%);
-    height: 1px;
-    border-radius: 999px;
-    background: radial-gradient(
-        ellipse at center,
-        var(--interactive-accent) 0%,
-        rgba(var(--interactive-accent-rgb), 0.86) 18%,
-        rgba(var(--interactive-accent-rgb), 0.36) 46%,
-        rgba(var(--interactive-accent-rgb), 0) 76%
-    );
-    filter: drop-shadow(0 0 0 rgba(var(--interactive-accent-rgb), 0));
-    transform: translateX(-110%);
-}
-
-.url-preview-github-hover-card.is-loading .url-preview-github-hover-card-loading-beam {
-    height: 1px;
-    opacity: 1;
-}
-
-.url-preview-github-hover-card.is-loading .url-preview-github-hover-card-loading-beam-light {
-    animation: url-preview-github-hover-card-loading-beam 1.35s ease-in-out infinite alternate;
-    filter:
-        drop-shadow(0 1px 3px rgba(var(--interactive-accent-rgb), 0.58))
-        drop-shadow(0 2px 8px rgba(var(--interactive-accent-rgb), 0.24));
-}
-
 .url-preview-github-hover-card.is-visible {
     opacity: 1;
     pointer-events: auto;
@@ -305,7 +274,6 @@
 .url-preview-github-hover-card-description-shell {
     overflow: hidden;
     border-top: 1px solid var(--background-modifier-border);
-    animation: url-preview-github-hover-card-description-enter 180ms ease-out;
 }
 
 .url-preview-github-hover-card.is-measuring .url-preview-github-hover-card-description-shell {
@@ -314,34 +282,61 @@
     opacity: 1;
 }
 
-.url-preview-github-hover-card-description {
+.url-preview-github-hover-card-description,
+.url-preview-github-hover-card-description-skeleton {
+    display: -webkit-box;
     padding-top: 12px;
     padding-bottom: 14px;
-    color: var(--text-muted);
     font-size: var(--font-ui-small);
     line-height: 1.45;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
 }
 
-@keyframes url-preview-github-hover-card-loading-beam {
+.url-preview-github-hover-card-description {
+    color: var(--text-muted);
+    animation: url-preview-github-hover-card-description-fade-in 140ms ease-out;
+}
+
+.url-preview-github-hover-card-description-skeleton {
+    font-family: 'URL Preview Flow Circular', var(--font-interface);
+    color: transparent;
+    background-image: linear-gradient(
+        90deg,
+        var(--text-faint) 0%,
+        var(--interactive-accent) 42%,
+        var(--text-faint) 84%
+    );
+    background-image: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--text-muted) 30%, transparent) 0%,
+        color-mix(in srgb, var(--interactive-accent) 72%, var(--text-muted)) 42%,
+        color-mix(in srgb, var(--text-muted) 30%, transparent) 84%
+    );
+    background-size: 220% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: url-preview-github-hover-card-description-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes url-preview-github-hover-card-description-shimmer {
     from {
-        left: 0;
-        transform: translateX(-110%);
+        background-position: 120% 0;
     }
 
     to {
-        left: 100%;
-        transform: translateX(10%);
+        background-position: -120% 0;
     }
 }
 
-@keyframes url-preview-github-hover-card-description-enter {
+@keyframes url-preview-github-hover-card-description-fade-in {
     from {
-        max-height: 0;
         opacity: 0;
     }
 
     to {
-        max-height: 140px;
         opacity: 1;
     }
 }
