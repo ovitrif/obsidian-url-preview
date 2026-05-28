@@ -173,6 +173,7 @@
     pointer-events: none;
     transform: translateY(4px);
     transition: opacity 120ms ease, transform 120ms ease;
+    user-select: text;
 }
 
 .url-preview-github-hover-card.is-visible {
@@ -207,7 +208,7 @@
 }
 
 .url-preview-github-hover-card-title-action {
-    align-items: flex-start;
+    align-items: center;
     min-width: 0;
 }
 
@@ -292,7 +293,6 @@
     font-size: var(--font-ui-small);
 }
 
-.url-preview-github-hover-card-type,
 .url-preview-github-hover-card-state {
     padding: 2px 8px;
     border: 1px solid var(--background-modifier-border);
@@ -333,7 +333,7 @@
     line-height: 1.45;
     overflow: hidden;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 5;
 }
 
 .url-preview-github-hover-card-description {

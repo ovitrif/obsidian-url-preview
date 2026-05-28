@@ -395,6 +395,8 @@ export default class LinkPreviewPlugin extends Plugin {
             });
             this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
             this.registerDomEvent(doc, 'click', (e: MouseEvent) => {
+                if (this.isClickInsideGitHubHoverCard(doc, e)) return;
+
                 this.hideGitHubHoverCard(doc);
                 this.handleLinkClick(e);
             }, { capture: true });
@@ -791,6 +793,13 @@ export default class LinkPreviewPlugin extends Plugin {
         );
     }
 
+    private isClickInsideGitHubHoverCard(doc: Document, event: MouseEvent): boolean {
+        const state = this.githubHoverCards.get(doc);
+        const target = event.target;
+        const win = doc.defaultView ?? window;
+        return Boolean(state && target instanceof win.Node && state.element.contains(target));
+    }
+
     private updateGitHubHoverCardAtPoint(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
         const target = doc.elementFromPoint(point.x, point.y);
         const state = this.githubHoverCards.get(doc);
@@ -1049,10 +1058,8 @@ export default class LinkPreviewPlugin extends Plugin {
             void this.copyTextToClipboard(data.title, 'title');
         });
 
-        const meta = card.createDiv('url-preview-github-hover-card-meta');
-        const typeLabel = data.type === 'pull' ? 'Pull request' : 'Issue';
-        meta.createSpan({ cls: 'url-preview-github-hover-card-type', text: typeLabel });
         if (data.state) {
+            const meta = card.createDiv('url-preview-github-hover-card-meta');
             const state = meta.createSpan({
                 cls: `url-preview-github-hover-card-state is-${data.state.toLowerCase()}`,
                 text: data.state,
@@ -1069,7 +1076,7 @@ export default class LinkPreviewPlugin extends Plugin {
             );
             const skeleton = descriptionShell.createDiv({
                 cls: 'url-preview-github-hover-card-description-skeleton',
-                text: 'mmmmmmmmm mmmmmmmm mmmmmmmmm mmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmm',
+                text: 'mmmmmmmmm mmmmmmmm mmmmmmmmm mmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmm mmmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmmmm mmmmmmm mmmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmmmmm',
             });
             skeleton.setAttr('aria-hidden', 'true');
         }
