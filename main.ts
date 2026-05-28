@@ -1004,14 +1004,20 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const header = card.createDiv('url-preview-github-hover-card-header');
         const referenceLabel = `${data.repoLabel}#${data.id}`;
-        const referenceButton = header.createEl('button', {
-            cls: 'url-preview-github-hover-card-reference-button',
-        });
-        referenceButton.setAttr('type', 'button');
-        referenceButton.createSpan({ cls: 'url-preview-github-hover-card-repo', text: referenceLabel });
-        const copyIcon = referenceButton.createSpan('url-preview-github-hover-card-copy-icon');
+        const referenceAction = header.createSpan('url-preview-github-hover-card-reference-action');
+        referenceAction.setAttr('role', 'button');
+        referenceAction.setAttr('tabindex', '0');
+        referenceAction.createSpan({ cls: 'url-preview-github-hover-card-repo', text: referenceLabel });
+        const copyIcon = referenceAction.createSpan('url-preview-github-hover-card-copy-icon');
         setIcon(copyIcon, 'clipboard');
-        referenceButton.addEventListener('click', (event) => {
+        referenceAction.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyGitHubReference(data.shortReference);
+        });
+        referenceAction.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
             event.preventDefault();
             event.stopPropagation();
             void this.copyGitHubReference(data.shortReference);
