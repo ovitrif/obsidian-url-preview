@@ -202,10 +202,6 @@
     font-weight: var(--font-medium);
 }
 
-.url-preview-github-hover-card-id {
-    margin-left: 0.18em;
-}
-
 .url-preview-github-hover-card-title-row {
     display: flex;
     gap: 8px;
