@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Subtle pull request number badges beside GitHub PR links in Live Preview and reading mode.
 - Setting to toggle GitHub pull request ID badges.
 - Clickable GitHub pull request ID badges that copy the `owner/repo#123` reference to the clipboard.
-- Modifier-hover link tooltip hint when modifier-click preview is available.
 - Settings sidebar icon for URL Preview.
 - Toolbar size controls with a pin toggle to remember the current preview dimensions.
 - GitHub hover cards for pull request and issue links on regular link hover.
@@ -68,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover card titles now copy the title text when clicked, with the same inline clipboard affordance.
 - GitHub hover cards now keep open on internal clicks, allow text selection, remove the redundant type chip, and show five excerpt lines.
 - GitHub hover card descriptions now keep enough source text to fill the five-line excerpt clamp.
+- GitHub hover cards now clamp excerpts to five visible lines and no longer trigger the old modifier-hover tooltip.
 
 ## [0.5.0] - 2026-05-05
 

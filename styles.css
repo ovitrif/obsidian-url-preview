@@ -315,6 +315,8 @@
 
 .url-preview-github-hover-card-description-shell {
     overflow: hidden;
+    padding-top: 12px;
+    padding-bottom: 14px;
     border-top: 1px solid var(--background-modifier-border);
 }
 
@@ -327,8 +329,6 @@
 .url-preview-github-hover-card-description,
 .url-preview-github-hover-card-description-skeleton {
     display: -webkit-box;
-    padding-top: 12px;
-    padding-bottom: 14px;
     font-size: var(--font-ui-small);
     line-height: 1.45;
     overflow: hidden;

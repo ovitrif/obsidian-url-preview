@@ -84,11 +84,6 @@ interface GitHubIssueReference {
     type: 'issues' | 'pull';
 }
 
-interface ModifierPreviewTooltipState {
-    element: HTMLElement;
-    originalAriaLabel: string | null;
-}
-
 type GitHubReferenceCopyHandler = (githubReference: string) => void;
 
 interface InlinePreviewControlsState {
@@ -288,7 +283,6 @@ export default class LinkPreviewPlugin extends Plugin {
     private convertLinkMenus = new WeakSet<Menu>();
     private lastEditorContextLink?: EditorContextLink;
     private inlinePreviewControls = new Map<Document, InlinePreviewControlsState>();
-    private modifierPreviewTooltip?: ModifierPreviewTooltipState;
     private githubPullRequestBadgeObservers = new Map<Document, GitHubPullRequestBadgeObserver>();
     private githubPullRequestBadgeVersion = 0;
     private githubHoverCards = new Map<Document, GitHubHoverCardState>();
@@ -390,9 +384,10 @@ export default class LinkPreviewPlugin extends Plugin {
             this.handledDocuments.add(doc);
 
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
+                this.lastMouseX = e.clientX;
+                this.lastMouseY = e.clientY;
                 this.updateInlinePreviewButton(e);
                 this.updateGitHubHoverCardFromEvent(e);
-                this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
             this.registerDomEvent(doc, 'click', (e: MouseEvent) => {
@@ -411,7 +406,6 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.updateInlinePreviewButton(e);
                 }
                 this.updateGitHubHoverCardFromEvent(e);
-                this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (e.key === 'Escape' && this.activePreview) {
@@ -419,21 +413,17 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 if (e.key === 'Escape') {
                     this.hideGitHubHoverCard(doc);
-                    this.updateModifierPreviewTooltipFromEvent(doc, e);
                     return;
                 }
                 this.updateGitHubHoverCardAtPoint(doc, { x: this.lastMouseX, y: this.lastMouseY }, this.getModifierState(e));
-                this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
                 this.updateGitHubHoverCardAtPoint(doc, { x: this.lastMouseX, y: this.lastMouseY }, this.getModifierState(e));
-                this.updateModifierPreviewTooltipFromEvent(doc, e);
             });
             const win = doc.defaultView;
             if (win) {
                 this.registerDomEvent(win, 'blur', () => {
                     this.hideGitHubHoverCard(doc);
-                    this.hideModifierPreviewTooltip();
                 });
             }
             this.registerGitHubPullRequestBadges(doc);
@@ -454,7 +444,6 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 this.removeInlinePreviewControls(workspaceWindow.doc);
                 this.removeGitHubHoverCard(workspaceWindow.doc);
-                this.hideModifierPreviewTooltip();
                 this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
@@ -723,64 +712,6 @@ export default class LinkPreviewPlugin extends Plugin {
         }
 
         this.showInlinePreviewControls(doc, linkInfo, point);
-    }
-
-    private updateModifierPreviewTooltipFromEvent(doc: Document, event: MouseEvent | KeyboardEvent) {
-        const point = 'clientX' in event
-            ? { x: event.clientX, y: event.clientY }
-            : { x: this.lastMouseX, y: this.lastMouseY };
-        this.lastMouseX = point.x;
-        this.lastMouseY = point.y;
-        this.updateModifierPreviewTooltip(doc, point, this.getModifierState(event));
-    }
-
-    private updateModifierPreviewTooltip(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
-        if (this.activePreview?.doc === doc || !this.areConfiguredModifiersPressed(modifiers)) {
-            this.hideModifierPreviewTooltip();
-            return;
-        }
-
-        const target = doc.elementFromPoint(point.x, point.y);
-        if (!(target instanceof Element)) {
-            this.hideModifierPreviewTooltip();
-            return;
-        }
-
-        if (this.activePreview?.element.contains(target)) {
-            this.hideModifierPreviewTooltip();
-            return;
-        }
-
-        const linkInfo = this.findLinkElement(target, null, point);
-        if (!linkInfo) {
-            this.hideModifierPreviewTooltip();
-            return;
-        }
-
-        this.showModifierPreviewTooltip(linkInfo.element);
-    }
-
-    private showModifierPreviewTooltip(element: HTMLElement) {
-        if (this.modifierPreviewTooltip?.element === element) return;
-
-        this.hideModifierPreviewTooltip();
-        this.modifierPreviewTooltip = {
-            element,
-            originalAriaLabel: element.getAttribute('aria-label'),
-        };
-        element.setAttr('aria-label', 'Click to preview');
-    }
-
-    private hideModifierPreviewTooltip() {
-        if (!this.modifierPreviewTooltip) return;
-
-        const { element, originalAriaLabel } = this.modifierPreviewTooltip;
-        if (originalAriaLabel === null) {
-            element.removeAttribute('aria-label');
-        } else {
-            element.setAttr('aria-label', originalAriaLabel);
-        }
-        this.modifierPreviewTooltip = undefined;
     }
 
     private updateGitHubHoverCardFromEvent(event: MouseEvent) {
@@ -1802,7 +1733,6 @@ export default class LinkPreviewPlugin extends Plugin {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        this.hideModifierPreviewTooltip();
         this.openPreviewForLink(linkInfo);
     }
 
@@ -1970,9 +1900,6 @@ export default class LinkPreviewPlugin extends Plugin {
             this.activeResizeCleanup = undefined;
         }
         if (this.activePreview) {
-            this.hideModifierPreviewTooltip();
-        }
-        if (this.activePreview) {
             this.activePreview.cleanup();
             this.activePreview = undefined;
         }
@@ -2085,7 +2012,6 @@ export default class LinkPreviewPlugin extends Plugin {
         for (const doc of this.githubHoverCards.keys()) {
             this.removeGitHubHoverCard(doc);
         }
-        this.hideModifierPreviewTooltip();
         for (const doc of this.githubPullRequestBadgeObservers.keys()) {
             this.unregisterGitHubPullRequestBadges(doc);
         }
