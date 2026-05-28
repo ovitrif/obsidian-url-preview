@@ -163,6 +163,7 @@ const GITHUB_HOVER_CARD_DELAY_MS = 250;
 const GITHUB_HOVER_CARD_GAP = 12;
 const GITHUB_HOVER_CARD_HIDE_DELAY_MS = 300;
 const GITHUB_HOVER_CARD_MARGIN = 10;
+const GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH = 320;
 const MIN_PREVIEW_LOADING_MS = 750;
 const POST_LOAD_SPINNER_MS = 350;
 const TOOLBAR_TOOLTIP_OPTIONS = {
@@ -1201,7 +1202,7 @@ export default class LinkPreviewPlugin extends Plugin {
         const description = commentText ?? metaText;
         if (!description || description === title || /github is where/i.test(description)) return null;
 
-        return this.truncateText(description, 180);
+        return this.truncateText(description, GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH);
     }
 
     private extractGitHubHoverCardState(doc: Document): string | null {

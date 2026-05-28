@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover card reference copy affordance now renders as inline text instead of a native button.
 - GitHub hover card titles now copy the title text when clicked, with the same inline clipboard affordance.
 - GitHub hover cards now keep open on internal clicks, allow text selection, remove the redundant type chip, and show five excerpt lines.
+- GitHub hover card descriptions now keep enough source text to fill the five-line excerpt clamp.
 
 ## [0.5.0] - 2026-05-05
 
