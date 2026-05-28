@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bundled the Flow Circular font locally for GitHub hover card skeleton placeholders.
 - GitHub hover card skeletons now inline the Flow Circular font and avoid readable placeholder text.
 - GitHub hover cards no longer apply the legacy loading class that could draw an accent loading bar.
+- GitHub hover cards now let the `owner/repo#123` header copy the reference and no longer add a duplicate reference tooltip to the link text.
 
 ## [0.5.0] - 2026-05-05
 

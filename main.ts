@@ -361,19 +361,12 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (!githubReference) return [];
 
                 const badgePosition = link.end;
-                const linkTooltip = Decoration.mark({
-                    attributes: {
-                        'aria-label': githubReference.shortReference,
-                        'class': 'url-preview-github-pr-link-tooltip',
-                    },
-                }).range(link.textStart, link.textEnd);
 
                 if (this.linkTextContainsGitHubId(link.text, githubReference.id)) {
-                    return [linkTooltip];
+                    return [];
                 }
 
                 return [
-                    linkTooltip,
                     Decoration.widget({
                         side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
                         widget: new GitHubPullRequestBadgeWidget(
@@ -517,7 +510,9 @@ export default class LinkPreviewPlugin extends Plugin {
                 continue;
             }
 
-            link.setAttr('aria-label', githubReference.shortReference);
+            if (link.getAttribute('aria-label') === githubReference.shortReference) {
+                link.removeAttribute('aria-label');
+            }
             if (this.linkTextContainsGitHubId(link.textContent ?? '', githubReference.id)) {
                 this.removeGitHubPullRequestBadge(link);
                 continue;
@@ -1009,8 +1004,18 @@ export default class LinkPreviewPlugin extends Plugin {
 
         const header = card.createDiv('url-preview-github-hover-card-header');
         const referenceLabel = `${data.repoLabel}#${data.id}`;
-        const repo = header.createSpan({ cls: 'url-preview-github-hover-card-repo', text: referenceLabel });
-        repo.setAttr('title', referenceLabel);
+        const referenceButton = header.createEl('button', {
+            cls: 'url-preview-github-hover-card-reference-button',
+        });
+        referenceButton.setAttr('type', 'button');
+        referenceButton.createSpan({ cls: 'url-preview-github-hover-card-repo', text: referenceLabel });
+        const copyIcon = referenceButton.createSpan('url-preview-github-hover-card-copy-icon');
+        setIcon(copyIcon, 'clipboard');
+        referenceButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyGitHubReference(data.shortReference);
+        });
 
         const titleRow = card.createDiv('url-preview-github-hover-card-title-row');
         const icon = titleRow.createSpan('url-preview-github-hover-card-icon');
