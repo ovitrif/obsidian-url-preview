@@ -1008,7 +1008,7 @@ export default class LinkPreviewPlugin extends Plugin {
         card.empty();
 
         const header = card.createDiv('url-preview-github-hover-card-header');
-        const referenceLabel = `${data.repoLabel} #${data.id}`;
+        const referenceLabel = `${data.repoLabel}#${data.id}`;
         const repo = header.createSpan({ cls: 'url-preview-github-hover-card-repo', text: referenceLabel });
         repo.setAttr('title', referenceLabel);
 
