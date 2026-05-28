@@ -65,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover cards no longer apply the legacy loading class that could draw an accent loading bar.
 - GitHub hover cards now let the `owner/repo#123` header copy the reference and no longer add a duplicate reference tooltip to the link text.
 - GitHub hover card reference copy affordance now renders as inline text instead of a native button.
+- GitHub hover card titles now copy the title text when clicked, with the same inline clipboard affordance.
 
 ## [0.5.0] - 2026-05-05
 

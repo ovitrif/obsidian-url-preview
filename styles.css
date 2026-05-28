@@ -197,12 +197,18 @@
     white-space: nowrap;
 }
 
-.url-preview-github-hover-card-reference-action {
+.url-preview-github-hover-card-reference-action,
+.url-preview-github-hover-card-title-action {
     display: inline-flex;
     align-items: center;
     max-width: 100%;
     color: inherit;
     cursor: pointer;
+}
+
+.url-preview-github-hover-card-title-action {
+    align-items: flex-start;
+    min-width: 0;
 }
 
 .url-preview-github-hover-card-repo {
@@ -227,18 +233,23 @@
 }
 
 .url-preview-github-hover-card-reference-action:hover,
-.url-preview-github-hover-card-reference-action:focus-visible {
+.url-preview-github-hover-card-reference-action:focus-visible,
+.url-preview-github-hover-card-title-action:hover,
+.url-preview-github-hover-card-title-action:focus-visible {
     color: var(--text-normal);
 }
 
-.url-preview-github-hover-card-reference-action:focus-visible {
+.url-preview-github-hover-card-reference-action:focus-visible,
+.url-preview-github-hover-card-title-action:focus-visible {
     border-radius: var(--radius-s);
     outline: 2px solid var(--interactive-accent);
     outline-offset: 2px;
 }
 
 .url-preview-github-hover-card-reference-action:hover .url-preview-github-hover-card-copy-icon,
-.url-preview-github-hover-card-reference-action:focus-visible .url-preview-github-hover-card-copy-icon {
+.url-preview-github-hover-card-reference-action:focus-visible .url-preview-github-hover-card-copy-icon,
+.url-preview-github-hover-card-title-action:hover .url-preview-github-hover-card-copy-icon,
+.url-preview-github-hover-card-title-action:focus-visible .url-preview-github-hover-card-copy-icon {
     opacity: 1;
 }
 

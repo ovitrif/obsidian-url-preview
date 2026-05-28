@@ -605,11 +605,15 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private async copyGitHubReference(githubReference: string) {
+        await this.copyTextToClipboard(githubReference, githubReference);
+    }
+
+    private async copyTextToClipboard(text: string, label: string) {
         try {
-            await navigator.clipboard.writeText(githubReference);
-            new Notice(`Copied ${githubReference}`);
+            await navigator.clipboard.writeText(text);
+            new Notice(`Copied ${label}`);
         } catch {
-            new Notice(`Could not copy ${githubReference}`);
+            new Notice(`Could not copy ${label}`);
         }
     }
 
@@ -1026,7 +1030,24 @@ export default class LinkPreviewPlugin extends Plugin {
         const titleRow = card.createDiv('url-preview-github-hover-card-title-row');
         const icon = titleRow.createSpan('url-preview-github-hover-card-icon');
         setIcon(icon, data.type === 'pull' ? 'git-pull-request' : 'circle-dot');
-        titleRow.createSpan({ cls: 'url-preview-github-hover-card-title', text: data.title });
+        const titleAction = titleRow.createSpan('url-preview-github-hover-card-title-action');
+        titleAction.setAttr('role', 'button');
+        titleAction.setAttr('tabindex', '0');
+        titleAction.createSpan({ cls: 'url-preview-github-hover-card-title', text: data.title });
+        const titleCopyIcon = titleAction.createSpan('url-preview-github-hover-card-copy-icon');
+        setIcon(titleCopyIcon, 'clipboard');
+        titleAction.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyTextToClipboard(data.title, 'title');
+        });
+        titleAction.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyTextToClipboard(data.title, 'title');
+        });
 
         const meta = card.createDiv('url-preview-github-hover-card-meta');
         const typeLabel = data.type === 'pull' ? 'Pull request' : 'Issue';
