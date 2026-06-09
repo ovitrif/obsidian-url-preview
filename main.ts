@@ -84,6 +84,8 @@ interface GitHubIssueReference {
     type: 'issues' | 'pull';
 }
 
+type GitHubIssueState = 'Open' | 'Draft' | 'Merged' | 'Closed';
+
 type GitHubReferenceCopyHandler = (githubReference: string) => void;
 
 interface InlinePreviewControlsState {
@@ -104,7 +106,7 @@ interface GitHubHoverCardData {
     id: string;
     repoLabel: string;
     shortReference: string;
-    state: string | null;
+    state: GitHubIssueState | null;
     title: string;
     type: 'issues' | 'pull';
 }
@@ -994,7 +996,8 @@ export default class LinkPreviewPlugin extends Plugin {
         });
 
         const titleRow = card.createDiv('url-preview-github-hover-card-title-row');
-        const icon = titleRow.createSpan('url-preview-github-hover-card-icon');
+        const stateClass = data.state ? ` is-${data.state.toLowerCase()}` : '';
+        const icon = titleRow.createSpan(`url-preview-github-hover-card-icon${stateClass}`);
         setIcon(icon, data.type === 'pull' ? 'git-pull-request' : 'circle-dot');
         const titleAction = titleRow.createSpan('url-preview-github-hover-card-title-action');
         titleAction.setAttr('role', 'button');
@@ -1014,15 +1017,6 @@ export default class LinkPreviewPlugin extends Plugin {
             event.stopPropagation();
             void this.copyTextToClipboard(data.title, 'title');
         });
-
-        if (data.state) {
-            const meta = card.createDiv('url-preview-github-hover-card-meta');
-            const state = meta.createSpan({
-                cls: `url-preview-github-hover-card-state is-${data.state.toLowerCase()}`,
-                text: data.state,
-            });
-            state.setAttr('title', data.state);
-        }
 
         if (data.description) {
             const descriptionShell = card.createDiv('url-preview-github-hover-card-description-shell');
@@ -1161,16 +1155,37 @@ export default class LinkPreviewPlugin extends Plugin {
         return this.truncateText(description, GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH);
     }
 
-    private extractGitHubHoverCardState(doc: Document): string | null {
-        const stateText = this.cleanPageTitle(
-            doc.querySelector('.State, [data-testid="issue-state"], .gh-header-meta .State')?.textContent
+    private extractGitHubHoverCardState(doc: Document): GitHubIssueState | null {
+        const header = doc.querySelector('[data-component="PH_Title"]')?.closest('header') ??
+            doc.querySelector('.gh-header');
+        const stateElement = header?.querySelector(
+            '[data-status], .State, [data-testid="issue-state"], [data-testid="issue-state-badge"], [data-testid="pr-state-badge"]'
         );
-        if (!stateText) return null;
+        if (stateElement) {
+            const state = this.extractGitHubStateFromElement(stateElement);
+            if (state) return state;
+        }
 
-        const normalized = stateText.toLowerCase();
+        const legacyHeaderState = doc.querySelector('.gh-header-meta .State');
+        if (!legacyHeaderState) return null;
+
+        return this.extractGitHubStateFromElement(legacyHeaderState);
+    }
+
+    private extractGitHubStateFromElement(element: Element): GitHubIssueState | null {
+        const status = element.getAttribute('data-status') ?? '';
+        const className = typeof element.className === 'string' ? element.className : '';
+        const text = this.cleanPageTitle(element.textContent) ?? '';
+        const title = element.getAttribute('title') ?? '';
+
+        return this.normalizeGitHubIssueState(`${status} ${className} ${title} ${text}`);
+    }
+
+    private normalizeGitHubIssueState(value: string): GitHubIssueState | null {
+        const normalized = value.toLowerCase();
+        if (normalized.includes('draft')) return 'Draft';
         if (normalized.includes('merged')) return 'Merged';
         if (normalized.includes('closed')) return 'Closed';
-        if (normalized.includes('draft')) return 'Draft';
         if (normalized.includes('open')) return 'Open';
         return null;
     }

@@ -69,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub hover card descriptions now keep enough source text to fill the five-line excerpt clamp.
 - GitHub hover cards now clamp excerpts to five visible lines and no longer trigger the old modifier-hover tooltip.
 - Inline link actions and GitHub hover cards no longer appear from a parked cursor during edits, and both are suppressed in source mode.
+- GitHub hover cards now read the PR state from the page header and show it by coloring the title icon instead of rendering a separate pill row.
 
 ## [0.5.0] - 2026-05-05
 

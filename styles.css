@@ -184,7 +184,6 @@
 
 .url-preview-github-hover-card-header,
 .url-preview-github-hover-card-title-row,
-.url-preview-github-hover-card-meta,
 .url-preview-github-hover-card-description-shell {
     padding-right: 14px;
     padding-left: 14px;
@@ -266,6 +265,22 @@
     color: var(--interactive-accent);
 }
 
+.url-preview-github-hover-card-icon.is-open {
+    color: var(--color-green);
+}
+
+.url-preview-github-hover-card-icon.is-draft {
+    color: var(--text-muted);
+}
+
+.url-preview-github-hover-card-icon.is-merged {
+    color: var(--color-purple);
+}
+
+.url-preview-github-hover-card-icon.is-closed {
+    color: var(--color-red);
+}
+
 .url-preview-github-hover-card-icon svg {
     width: 18px;
     height: 18px;
@@ -281,36 +296,6 @@
     -webkit-box-orient: vertical;
     line-height: 1.3;
     text-overflow: ellipsis;
-}
-
-.url-preview-github-hover-card-meta {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    padding-top: 10px;
-    padding-bottom: 12px;
-    color: var(--text-muted);
-    font-size: var(--font-ui-small);
-}
-
-.url-preview-github-hover-card-state {
-    padding: 2px 8px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 999px;
-    background-color: var(--background-secondary);
-    line-height: 1.4;
-}
-
-.url-preview-github-hover-card-state.is-open {
-    color: var(--color-green);
-}
-
-.url-preview-github-hover-card-state.is-merged {
-    color: var(--color-purple);
-}
-
-.url-preview-github-hover-card-state.is-closed {
-    color: var(--color-red);
 }
 
 .url-preview-github-hover-card-description-shell {
