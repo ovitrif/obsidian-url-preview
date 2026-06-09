@@ -386,8 +386,6 @@ export default class LinkPreviewPlugin extends Plugin {
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
-                this.updateInlinePreviewButton(e);
-                this.updateGitHubHoverCardFromEvent(e);
             });
             this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
             this.registerDomEvent(doc, 'click', (e: MouseEvent) => {
@@ -404,10 +402,15 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.lastMouseY = e.clientY;
                 if (didMouseMove) {
                     this.updateInlinePreviewButton(e);
+                    this.updateGitHubHoverCardFromEvent(e);
                 }
-                this.updateGitHubHoverCardFromEvent(e);
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
+                if (this.isSourceModeToggleEvent(e)) {
+                    this.hideEditorHoverUi(doc);
+                    const win = doc.defaultView ?? window;
+                    win.setTimeout(() => this.hideEditorHoverUi(doc), 0);
+                }
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
                 }
@@ -415,10 +418,6 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.hideGitHubHoverCard(doc);
                     return;
                 }
-                this.updateGitHubHoverCardAtPoint(doc, { x: this.lastMouseX, y: this.lastMouseY }, this.getModifierState(e));
-            });
-            this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
-                this.updateGitHubHoverCardAtPoint(doc, { x: this.lastMouseX, y: this.lastMouseY }, this.getModifierState(e));
             });
             const win = doc.defaultView;
             if (win) {
@@ -436,6 +435,12 @@ export default class LinkPreviewPlugin extends Plugin {
 
         this.registerEvent(
             this.app.workspace.on('window-open', (workspaceWindow) => handleWindow(workspaceWindow.doc))
+        );
+        this.registerEvent(
+            this.app.workspace.on('editor-change', () => this.hideAllEditorHoverUi())
+        );
+        this.registerEvent(
+            this.app.workspace.on('layout-change', () => this.hideAllEditorHoverUi())
         );
         this.registerEvent(
             this.app.workspace.on('window-close', (workspaceWindow) => {
@@ -696,6 +701,11 @@ export default class LinkPreviewPlugin extends Plugin {
         const state = this.inlinePreviewControls.get(doc);
         const point = { x: event.clientX, y: event.clientY };
         if (state?.container.contains(target) || (state && this.isPointInInlineControlsHoverZone(state, point))) {
+            return;
+        }
+
+        if (this.isSourceModeMarkdownTarget(target)) {
+            this.hideInlinePreviewControls(doc);
             return;
         }
 
@@ -1442,6 +1452,11 @@ export default class LinkPreviewPlugin extends Plugin {
         return 0;
     }
 
+    private isSourceModeMarkdownTarget(element: Element): boolean {
+        const sourceView = element.closest('.markdown-source-view');
+        return sourceView instanceof HTMLElement && !sourceView.classList.contains('is-live-preview');
+    }
+
     private getInlinePreviewLineElement(element: HTMLElement): HTMLElement | null {
         const lineElement = element.closest('.cm-line, li, p, h1, h2, h3, h4, h5, h6, td, th, blockquote');
         return lineElement instanceof HTMLElement ? lineElement : null;
@@ -1488,6 +1503,24 @@ export default class LinkPreviewPlugin extends Plugin {
 
         state.container.remove();
         this.inlinePreviewControls.delete(doc);
+    }
+
+    private hideEditorHoverUi(doc: Document) {
+        this.hideInlinePreviewControls(doc);
+        this.hideGitHubHoverCard(doc);
+    }
+
+    private hideAllEditorHoverUi() {
+        for (const doc of this.handledDocuments) {
+            this.hideEditorHoverUi(doc);
+        }
+    }
+
+    private isSourceModeToggleEvent(event: KeyboardEvent): boolean {
+        const isSlash = event.key === '/' || event.code === 'Slash';
+        if (!isSlash) return false;
+
+        return Platform.isMacOS ? event.metaKey : event.ctrlKey;
     }
 
     private addConvertToMarkdownLinkMenuItemForUrl(menu: Menu, url: string) {
