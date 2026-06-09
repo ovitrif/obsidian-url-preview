@@ -746,8 +746,18 @@ export default class LinkPreviewPlugin extends Plugin {
         const target = doc.elementFromPoint(point.x, point.y);
         const state = this.githubHoverCards.get(doc);
 
+        if (state?.linkInfo && this.isSourceModeMarkdownTarget(state.linkInfo.element)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
         if (!(target instanceof Element)) {
             this.scheduleGitHubHoverCardHide(doc);
+            return;
+        }
+
+        if (this.isSourceModeMarkdownTarget(target)) {
+            this.hideGitHubHoverCard(doc);
             return;
         }
 
@@ -769,6 +779,11 @@ export default class LinkPreviewPlugin extends Plugin {
         const linkInfo = this.findLinkElement(target, null, point);
         if (!linkInfo) {
             this.scheduleGitHubHoverCardHide(doc);
+            return;
+        }
+
+        if (this.isSourceModeMarkdownTarget(linkInfo.element)) {
+            this.hideGitHubHoverCard(doc);
             return;
         }
 
