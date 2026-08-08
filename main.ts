@@ -1,5 +1,25 @@
-import { EditorView } from '@codemirror/view';
-import { App, Plugin, PluginSettingTab, Setting, SettingGroup, Platform, setIcon, setTooltip } from 'obsidian';
+import {
+    Decoration,
+    EditorView,
+    ViewPlugin,
+    WidgetType,
+} from '@codemirror/view';
+import type { DecorationSet, ViewUpdate } from '@codemirror/view';
+import {
+    App,
+    Editor,
+    MarkdownView,
+    Menu,
+    Notice,
+    Platform,
+    Plugin,
+    PluginSettingTab,
+    SettingGroup,
+    normalizePath,
+    requestUrl,
+    setIcon,
+    setTooltip,
+} from 'obsidian';
 
 type ModifierKeyType = 'meta' | 'ctrl' | 'alt' | 'shift';
 type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
@@ -10,8 +30,10 @@ interface ScreenPoint {
 }
 
 interface LinkInfo {
+    editorView?: EditorView;
     element: HTMLElement;
     hoverElement: HTMLElement;
+    markdownLink?: ParsedMarkdownLink;
     sourceKey?: string;
     url: string;
 }
@@ -27,8 +49,127 @@ interface ParsedMarkdownLink {
     url: string;
 }
 
+interface EditorContextLink {
+    link: ParsedMarkdownLink;
+    rawText: string;
+    timestamp: number;
+}
+
+interface TextRange {
+    end: number;
+    start: number;
+}
+
+interface ViewRect {
+    bottom: number;
+    height: number;
+    left: number;
+    right: number;
+    top: number;
+    width: number;
+}
+
+interface ModifierState {
+    altKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    shiftKey: boolean;
+}
+
+interface GitHubIssueReference {
+    id: string;
+    owner: string;
+    repo: string;
+    shortReference: string;
+    type: 'issues' | 'pull';
+}
+
+type GitHubIssueState = 'Open' | 'Draft' | 'Merged' | 'Closed';
+
+type GitHubReferenceCopyHandler = (githubReference: string) => void;
+
+interface InlinePreviewControlsState {
+    container: HTMLElement;
+    githubConvertButton: HTMLElement;
+    hoverZone?: ViewRect;
+    previewButton: HTMLElement;
+    target?: LinkInfo;
+}
+
+interface GitHubPullRequestBadgeObserver {
+    observer: MutationObserver;
+    scheduled: boolean;
+}
+
+interface GitHubHoverCardData {
+    description: string | null;
+    id: string;
+    repoLabel: string;
+    shortReference: string;
+    state: GitHubIssueState | null;
+    title: string;
+    type: 'issues' | 'pull';
+}
+
+interface GitHubHoverCardState {
+    element: HTMLElement;
+    hideTimeout?: number;
+    hoverZone?: ViewRect;
+    key?: string;
+    linkInfo?: LinkInfo;
+    loadingKey?: string;
+    pendingKey?: string;
+    point?: ScreenPoint;
+    reference?: GitHubIssueReference;
+    requestId: number;
+    showTimeout?: number;
+}
+
+type GitHubAuthState = 'signed-in' | 'signed-out' | 'unknown';
+
+interface RequireHost {
+    require?: (moduleName: string) => unknown;
+}
+
+interface ElectronCookie {
+    name: string;
+    value: string;
+}
+
+interface ElectronCookies {
+    get(filter: { url?: string; name?: string }): Promise<ElectronCookie[]>;
+}
+
+interface ElectronModule {
+    session?: {
+        defaultSession?: {
+            cookies?: ElectronCookies;
+        };
+    };
+}
+
 const MIN_PREVIEW_WIDTH = 200;
 const MIN_PREVIEW_HEIGHT = 150;
+const INLINE_CONTROLS_GAP = 4;
+const INLINE_CONTROLS_HOVER_PADDING_X = 12;
+const INLINE_CONTROLS_HOVER_PADDING_Y = 10;
+const INLINE_CONTROLS_SIZE = 20;
+const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 120;
+const GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE = 10000;
+const GITHUB_HOVER_CARD_DELAY_MS = 250;
+const GITHUB_HOVER_CARD_GAP = 12;
+const GITHUB_HOVER_CARD_HIDE_DELAY_MS = 300;
+const GITHUB_HOVER_CARD_MARGIN = 10;
+const GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH = 320;
+const MIN_PREVIEW_LOADING_MS = 750;
+const POST_LOAD_SPINNER_MS = 350;
+const TOOLBAR_TOOLTIP_OPTIONS = {
+    classes: ['url-preview-toolbar-tooltip'],
+    delay: 250,
+    gap: 6,
+    placement: 'bottom' as const,
+};
+const EDITOR_LINK_SELECTOR = '.external-link, .cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]';
 
 const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
     { direction: 'n', cls: 'resize-handle-n' },
@@ -41,6 +182,46 @@ const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
     { direction: 'se', cls: 'resize-handle-se' },
 ];
 
+class GitHubPullRequestBadgeWidget extends WidgetType {
+    constructor(
+        private readonly githubId: string,
+        private readonly githubReference: string,
+        private readonly copyGitHubReference: GitHubReferenceCopyHandler
+    ) {
+        super();
+    }
+
+    eq(other: GitHubPullRequestBadgeWidget): boolean {
+        return this.githubId === other.githubId && this.githubReference === other.githubReference;
+    }
+
+    toDOM(view: EditorView): HTMLElement {
+        const badge = view.dom.ownerDocument.createElement('span');
+        badge.addClass('url-preview-github-pr-badge');
+        badge.textContent = `#${this.githubId}`;
+        badge.setAttr('aria-label', 'Copy GitHub ID');
+        badge.setAttr('role', 'button');
+        badge.setAttr('tabindex', '0');
+        badge.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.copyGitHubReference(this.githubReference);
+        });
+        badge.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            this.copyGitHubReference(this.githubReference);
+        });
+        return badge;
+    }
+
+    ignoreEvent(): boolean {
+        return true;
+    }
+}
+
 interface ModifierKeyConfig {
     meta: boolean;
     ctrl: boolean;
@@ -51,16 +232,14 @@ interface ModifierKeyConfig {
 interface LinkPreviewSettings {
     maxPreviewHeight: number;
     maxPreviewWidth: number;
-    hoverDelay: number;
-    requireModifierKey: boolean;
     modifierKeys: ModifierKeyConfig;
-    closeOnModifierRelease: boolean;
-    mouseStillnessDelay: number;
     stickyPopup: boolean;
     showOpenInBrowser: boolean;
     showCloseButton: boolean;
+    showGitHubPullRequestIds: boolean;
     allowResize: boolean;
     persistResize: boolean;
+    domainZoomLevels: Record<string, number>;
     persistedWidth?: number;
     persistedHeight?: number;
 }
@@ -80,15 +259,13 @@ const DEFAULT_MODIFIER_KEYS: ModifierKeyConfig = {
 const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'persistedWidth' | 'persistedHeight'>> = {
     maxPreviewHeight: 960,
     maxPreviewWidth: 720,
-    hoverDelay: 1000,
-    requireModifierKey: true,
-    closeOnModifierRelease: false,
-    mouseStillnessDelay: 1000,
     stickyPopup: true,
     showOpenInBrowser: true,
     showCloseButton: true,
+    showGitHubPullRequestIds: true,
     allowResize: true,
     persistResize: false,
+    domainZoomLevels: {},
     // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
@@ -101,29 +278,106 @@ export default class LinkPreviewPlugin extends Plugin {
         link: HTMLElement,
         sourceKey?: string
     };
-    private hoverTimeout?: number;
-    private pendingPreview?: {
-        hoverElement: HTMLElement,
-        sourceKey?: string
-    };
     private lastMouseX = 0;
     private lastMouseY = 0;
-    private modifierState: ModifierKeyConfig = { meta: false, ctrl: false, alt: false, shift: false };
-    private lastMovementTime = 0;
-    private stillnessCheckTimeout?: number;
     private activeResizeCleanup?: () => void;
-    private loadingIndicator?: HTMLElement;
     private handledDocuments = new Set<Document>();
+    private convertLinkMenus = new WeakSet<Menu>();
+    private lastEditorContextLink?: EditorContextLink;
+    private inlinePreviewControls = new Map<Document, InlinePreviewControlsState>();
+    private githubPullRequestBadgeObservers = new Map<Document, GitHubPullRequestBadgeObserver>();
+    private githubPullRequestBadgeVersion = 0;
+    private githubHoverCards = new Map<Document, GitHubHoverCardState>();
+    private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
 
     async onload() {
         await this.loadSettings();
+        await this.removeLegacyPreviewCache();
         
         // Defer setup until layout is ready
         this.app.workspace.onLayoutReady(() => {
             this.registerGlobalHandler();
         });
+
+        this.registerEvent(
+            this.app.workspace.on('editor-menu', (menu, editor) => {
+                this.addConvertToMarkdownLinkMenuItem(menu, editor);
+            })
+        );
+        this.registerEvent(
+            this.app.workspace.on('url-menu', (menu, url) => {
+                this.addConvertToMarkdownLinkMenuItemForUrl(menu, url);
+            })
+        );
+        this.registerEditorExtension(this.createGitHubPullRequestBadgeExtension());
         
         this.addSettingTab(new LinkPreviewSettingTab(this.app, this));
+    }
+
+    private createGitHubPullRequestBadgeExtension() {
+        const buildDecorations = (view: EditorView) => this.buildGitHubPullRequestBadgeDecorations(view);
+        const getBadgeVersion = () => this.githubPullRequestBadgeVersion;
+
+        return ViewPlugin.fromClass(
+            class {
+                decorations: DecorationSet;
+                version: number;
+
+                constructor(view: EditorView) {
+                    this.version = getBadgeVersion();
+                    this.decorations = buildDecorations(view);
+                }
+
+                update(update: ViewUpdate) {
+                    const version = getBadgeVersion();
+                    if (
+                        !update.docChanged &&
+                        !update.geometryChanged &&
+                        !update.viewportChanged &&
+                        this.version === version
+                    ) return;
+
+                    this.version = version;
+                    this.decorations = buildDecorations(update.view);
+                }
+            },
+            {
+                decorations: (value) => value.decorations,
+            }
+        );
+    }
+
+    private buildGitHubPullRequestBadgeDecorations(view: EditorView): DecorationSet {
+        if (!this.settings.showGitHubPullRequestIds) return Decoration.none;
+
+        const links = this.parseEditorLinks(view.state.doc.toString());
+
+        return Decoration.set(
+            links.flatMap((link) => {
+                const githubReference = this.getGitHubIssueReference(link.url);
+                if (!githubReference) return [];
+
+                const badgePosition = link.end;
+
+                if (this.linkTextContainsGitHubId(link.text, githubReference.id)) {
+                    return [];
+                }
+
+                return [
+                    Decoration.widget({
+                        side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
+                        widget: new GitHubPullRequestBadgeWidget(
+                            githubReference.id,
+                            githubReference.shortReference,
+                            (reference) => {
+                                void this.copyGitHubReference(reference);
+                            }
+                        ),
+                    }).range(badgePosition),
+                ];
+            }),
+            true
+        );
     }
 
     private registerGlobalHandler() {
@@ -131,46 +385,49 @@ export default class LinkPreviewPlugin extends Plugin {
             if (this.handledDocuments.has(doc)) return;
             this.handledDocuments.add(doc);
 
-            this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => this.handleLinkHover(e));
-            this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
-                // Track mouse stillness - only update time if mouse moved significantly (>2px)
-                const dx = Math.abs(e.clientX - this.lastMouseX);
-                const dy = Math.abs(e.clientY - this.lastMouseY);
-                if (dx > 2 || dy > 2) {
-                    this.lastMovementTime = Date.now();
-                }
+            this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
-                if (this.loadingIndicator) {
-                    this.loadingIndicator.setCssStyles({
-                        left: `${e.clientX + 12}px`,
-                        top: `${e.clientY + 12}px`,
-                    });
+            });
+            this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
+            this.registerDomEvent(doc, 'click', (e: MouseEvent) => {
+                if (this.isClickInsideGitHubHoverCard(doc, e)) return;
+
+                this.hideGitHubHoverCard(doc);
+                this.handleLinkClick(e);
+            }, { capture: true });
+            this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
+                const dx = Math.abs(e.clientX - this.lastMouseX);
+                const dy = Math.abs(e.clientY - this.lastMouseY);
+                const didMouseMove = dx > 0 || dy > 0;
+                this.lastMouseX = e.clientX;
+                this.lastMouseY = e.clientY;
+                if (didMouseMove) {
+                    this.updateInlinePreviewButton(e);
+                    this.updateGitHubHoverCardFromEvent(e);
                 }
             });
             this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
+                if (this.isSourceModeToggleEvent(e)) {
+                    this.hideEditorHoverUi(doc);
+                    const win = doc.defaultView ?? window;
+                    win.setTimeout(() => this.hideEditorHoverUi(doc), 0);
+                }
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
                 }
-                // Update modifier state
-                this.updateModifierState(e);
-                // Handle modifier key press while hovering over link
-                if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
-                    this.handleModifierKeyDown(doc);
+                if (e.key === 'Escape') {
+                    this.hideGitHubHoverCard(doc);
+                    return;
                 }
             });
-            this.registerDomEvent(doc, 'keyup', (e: KeyboardEvent) => {
-                // Update modifier state
-                this.updateModifierState(e);
-                // Close preview when any required modifier key is released
-                if (this.settings.requireModifierKey && this.isModifierKeyEvent(e)) {
-                    this.handleModifierKeyUp();
-                }
-            });
-            // Reset modifier state on window blur
-            this.registerDomEvent(doc.defaultView ?? window, 'blur', () => {
-                this.modifierState = { meta: false, ctrl: false, alt: false, shift: false };
-            });
+            const win = doc.defaultView;
+            if (win) {
+                this.registerDomEvent(win, 'blur', () => {
+                    this.hideGitHubHoverCard(doc);
+                });
+            }
+            this.registerGitHubPullRequestBadges(doc);
         };
 
         handleWindow(document);
@@ -182,131 +439,1383 @@ export default class LinkPreviewPlugin extends Plugin {
             this.app.workspace.on('window-open', (workspaceWindow) => handleWindow(workspaceWindow.doc))
         );
         this.registerEvent(
+            this.app.workspace.on('editor-change', () => this.hideAllEditorHoverUi())
+        );
+        this.registerEvent(
+            this.app.workspace.on('layout-change', () => this.hideAllEditorHoverUi())
+        );
+        this.registerEvent(
             this.app.workspace.on('window-close', (workspaceWindow) => {
                 if (this.activePreview?.doc === workspaceWindow.doc) {
                     this.cleanupActivePreview();
                 }
+                this.removeInlinePreviewControls(workspaceWindow.doc);
+                this.removeGitHubHoverCard(workspaceWindow.doc);
+                this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
         );
     }
 
-    private updateModifierState(e: KeyboardEvent) {
-        this.modifierState.meta = e.metaKey;
-        this.modifierState.ctrl = e.ctrlKey;
-        this.modifierState.alt = e.altKey;
-        this.modifierState.shift = e.shiftKey;
+    private registerGitHubPullRequestBadges(doc: Document) {
+        if (this.githubPullRequestBadgeObservers.has(doc)) return;
+
+        this.syncGitHubPullRequestBadgeVisibility(doc);
+        const observerState: GitHubPullRequestBadgeObserver = {
+            observer: new MutationObserver(() => this.scheduleGitHubPullRequestBadgeUpdate(doc)),
+            scheduled: false,
+        };
+        this.githubPullRequestBadgeObservers.set(doc, observerState);
+        observerState.observer.observe(doc.body, { childList: true, subtree: true });
+        this.scheduleGitHubPullRequestBadgeUpdate(doc);
     }
 
-    private handleLinkHover(event: MouseEvent) {
-        const target = event.target as Element | null;
+    private unregisterGitHubPullRequestBadges(doc: Document) {
+        const observerState = this.githubPullRequestBadgeObservers.get(doc);
+        if (!observerState) return;
+
+        observerState.observer.disconnect();
+        this.githubPullRequestBadgeObservers.delete(doc);
+        doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+        doc.body.removeClass('url-preview-hide-github-pr-badges');
+    }
+
+    private scheduleGitHubPullRequestBadgeUpdate(doc: Document) {
+        const observerState = this.githubPullRequestBadgeObservers.get(doc);
+        if (!observerState || observerState.scheduled) return;
+
+        observerState.scheduled = true;
+        const win = doc.defaultView ?? window;
+        win.requestAnimationFrame(() => {
+            observerState.scheduled = false;
+            this.updateGitHubPullRequestBadges(doc);
+        });
+    }
+
+    private updateGitHubPullRequestBadges(doc: Document) {
+        if (!this.settings.showGitHubPullRequestIds) {
+            doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+            return;
+        }
+
+        const links = Array.from(doc.querySelectorAll('a[href]'));
+        for (const link of links) {
+            if (!(link instanceof HTMLAnchorElement)) continue;
+            if (link.closest('.hover-popup, .url-preview-inline-controls, .cm-editor')) continue;
+
+            const githubReference = this.getGitHubIssueReference(link.href);
+            if (!githubReference) {
+                this.removeGitHubPullRequestBadge(link);
+                continue;
+            }
+
+            if (link.getAttribute('aria-label') === githubReference.shortReference) {
+                link.removeAttribute('aria-label');
+            }
+            if (this.linkTextContainsGitHubId(link.textContent ?? '', githubReference.id)) {
+                this.removeGitHubPullRequestBadge(link);
+                continue;
+            }
+
+            this.upsertGitHubPullRequestBadge(link, githubReference);
+        }
+    }
+
+    private upsertGitHubPullRequestBadge(link: HTMLAnchorElement, githubReference: GitHubIssueReference) {
+        link.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+
+        const nextElement = link.nextElementSibling;
+        const existingBadge = nextElement?.classList.contains('url-preview-github-pr-badge') ? nextElement : null;
+        if (existingBadge instanceof HTMLElement) {
+            this.configureGitHubPullRequestBadge(existingBadge, githubReference);
+            return;
+        }
+
+        const badge = link.ownerDocument.createElement('span');
+        badge.addClass('url-preview-github-pr-badge');
+        this.configureGitHubPullRequestBadge(badge, githubReference);
+        link.parentElement?.insertBefore(badge, link.nextSibling);
+    }
+
+    private configureGitHubPullRequestBadge(badge: HTMLElement, githubReference: GitHubIssueReference) {
+        badge.textContent = `#${githubReference.id}`;
+        badge.setAttr('aria-label', 'Copy GitHub ID');
+        badge.setAttr('data-github-reference', githubReference.shortReference);
+        badge.setAttr('role', 'button');
+        badge.setAttr('tabindex', '0');
+
+        if (badge.getAttribute('data-url-preview-copy-enabled') === 'true') return;
+
+        badge.setAttr('data-url-preview-copy-enabled', 'true');
+        badge.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const currentGitHubReference = badge.getAttribute('data-github-reference');
+            if (currentGitHubReference) {
+                void this.copyGitHubReference(currentGitHubReference);
+            }
+        });
+        badge.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const currentGitHubReference = badge.getAttribute('data-github-reference');
+            if (currentGitHubReference) {
+                void this.copyGitHubReference(currentGitHubReference);
+            }
+        });
+    }
+
+    private removeGitHubPullRequestBadge(link: HTMLAnchorElement) {
+        link.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+        const nextElement = link.nextElementSibling;
+        if (nextElement?.classList.contains('url-preview-github-pr-badge')) {
+            nextElement.remove();
+        }
+    }
+
+    private linkTextContainsGitHubId(text: string, id: string): boolean {
+        return new RegExp(`#${id}(?!\\d)`).test(text);
+    }
+
+    private getGitHubIssueReference(url: string): GitHubIssueReference | null {
+        try {
+            const parsedUrl = new URL(url);
+            if (parsedUrl.hostname !== 'github.com') return null;
+
+            const [owner, repo, type, id] = parsedUrl.pathname.split('/').filter(Boolean);
+            if (!owner || !repo || !id) return null;
+            if (type !== 'pull' && type !== 'issues') return null;
+            if (!/^\d+$/.test(id)) return null;
+
+            return {
+                id,
+                owner,
+                repo,
+                shortReference: `${owner}/${repo}#${id}`,
+                type,
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    private async copyGitHubReference(githubReference: string) {
+        await this.copyTextToClipboard(githubReference, githubReference);
+    }
+
+    private async copyTextToClipboard(text: string, label: string) {
+        try {
+            await navigator.clipboard.writeText(text);
+            new Notice(`Copied ${label}`);
+        } catch {
+            new Notice(`Could not copy ${label}`);
+        }
+    }
+
+    async setShowGitHubPullRequestIds(value: boolean) {
+        this.settings.showGitHubPullRequestIds = value;
+        await this.saveSettings();
+        this.refreshGitHubPullRequestBadges();
+    }
+
+    private refreshGitHubPullRequestBadges() {
+        this.githubPullRequestBadgeVersion += 1;
+        for (const doc of this.handledDocuments) {
+            this.syncGitHubPullRequestBadgeVisibility(doc);
+            if (this.settings.showGitHubPullRequestIds) {
+                this.scheduleGitHubPullRequestBadgeUpdate(doc);
+            } else {
+                doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
+            }
+            this.requestGitHubPullRequestBadgeDecorationUpdate(doc);
+        }
+    }
+
+    private syncGitHubPullRequestBadgeVisibility(doc: Document) {
+        if (this.settings.showGitHubPullRequestIds) {
+            doc.body.removeClass('url-preview-hide-github-pr-badges');
+        } else {
+            doc.body.addClass('url-preview-hide-github-pr-badges');
+        }
+    }
+
+    private requestGitHubPullRequestBadgeDecorationUpdate(doc: Document) {
+        const views = new Set<EditorView>();
+        doc.querySelectorAll('.cm-editor').forEach((editorElement) => {
+            if (!(editorElement instanceof HTMLElement)) return;
+
+            const editorView = EditorView.findFromDOM(editorElement);
+            if (editorView) {
+                views.add(editorView);
+            }
+        });
+
+        views.forEach((editorView) => editorView.dispatch({}));
+    }
+
+    private captureEditorContextMenuLink(event: MouseEvent) {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        const editorElement = target.closest('.cm-editor');
+        if (!(editorElement instanceof HTMLElement)) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        if (!this.getEditorLinkTargetElement(target)) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        const editorView = EditorView.findFromDOM(target) ?? EditorView.findFromDOM(editorElement);
+        if (!editorView) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        const content = editorView.state.doc.toString();
+        const link = this.getMarkdownLinkAtPoint(editorView, content, { x: event.clientX, y: event.clientY });
+        if (!link) {
+            this.lastEditorContextLink = undefined;
+            return;
+        }
+
+        this.lastEditorContextLink = {
+            link,
+            rawText: content.slice(link.start, link.end),
+            timestamp: Date.now(),
+        };
+    }
+
+    private updateInlinePreviewButton(event: MouseEvent) {
+        const target = event.target;
         if (!(target instanceof Element)) return;
 
-        // Skip if event is from inside the active preview (prevents flickering)
+        const doc = target.ownerDocument;
+        const state = this.inlinePreviewControls.get(doc);
+        const point = { x: event.clientX, y: event.clientY };
+        if (state?.container.contains(target) || (state && this.isPointInInlineControlsHoverZone(state, point))) {
+            return;
+        }
+
+        if (this.isSourceModeMarkdownTarget(target)) {
+            this.hideInlinePreviewControls(doc);
+            return;
+        }
+
         if (this.activePreview?.element.contains(target)) {
+            this.hideInlinePreviewControls(doc);
             return;
         }
 
-        // Check for modifier key requirement
-        if (this.settings.requireModifierKey && !this.isModifierKeyPressed(event)) {
+        const linkInfo = this.findLinkElement(target, null, point) ??
+            this.findInlinePreviewLineLinkElement(target, point);
+        if (!linkInfo) {
+            this.hideInlinePreviewControls(doc);
             return;
         }
 
-        const relatedTarget = event.relatedTarget instanceof Element ? event.relatedTarget : null;
-        const linkInfo = this.findLinkElement(target, relatedTarget, { x: event.clientX, y: event.clientY });
+        this.showInlinePreviewControls(doc, linkInfo, point);
+    }
+
+    private updateGitHubHoverCardFromEvent(event: MouseEvent) {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+
+        this.updateGitHubHoverCardAtPoint(
+            target.ownerDocument,
+            { x: event.clientX, y: event.clientY },
+            this.getModifierState(event)
+        );
+    }
+
+    private isClickInsideGitHubHoverCard(doc: Document, event: MouseEvent): boolean {
+        const state = this.githubHoverCards.get(doc);
+        const target = event.target;
+        const win = doc.defaultView ?? window;
+        return Boolean(state && target instanceof win.Node && state.element.contains(target));
+    }
+
+    private updateGitHubHoverCardAtPoint(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
+        const target = doc.elementFromPoint(point.x, point.y);
+        const state = this.githubHoverCards.get(doc);
+
+        if (state?.linkInfo && this.isSourceModeMarkdownTarget(state.linkInfo.element)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        if (!(target instanceof Element)) {
+            this.scheduleGitHubHoverCardHide(doc);
+            return;
+        }
+
+        if (this.isSourceModeMarkdownTarget(target)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        if (this.activePreview?.doc === doc || this.activePreview?.element.contains(target)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        if (state?.element.contains(target) || (state && this.isPointInGitHubHoverCardHoverZone(state, point))) {
+            this.clearGitHubHoverCardHideTimer(state);
+            return;
+        }
+
+        if (!this.areConfiguredModifiersPressed(modifiers)) {
+            this.scheduleGitHubHoverCardHide(doc);
+            return;
+        }
+
+        const linkInfo = this.findLinkElement(target, null, point);
+        if (!linkInfo) {
+            this.scheduleGitHubHoverCardHide(doc);
+            return;
+        }
+
+        if (this.isSourceModeMarkdownTarget(linkInfo.element)) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
+        const reference = this.getGitHubIssueReference(linkInfo.url);
+        if (!reference) {
+            this.scheduleGitHubHoverCardHide(doc);
+            return;
+        }
+
+        this.scheduleGitHubHoverCard(doc, linkInfo, reference, point);
+    }
+
+    private scheduleGitHubHoverCard(
+        doc: Document,
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference,
+        point: ScreenPoint
+    ) {
+        const state = this.getGitHubHoverCard(doc);
+        const key = this.getGitHubHoverCardKey(linkInfo, reference);
+        this.clearGitHubHoverCardHideTimer(state);
+
+        if (state.key === key || state.pendingKey === key) {
+            state.linkInfo = linkInfo;
+            state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
+            state.reference = reference;
+            if (!state.element.classList.contains('is-visible')) {
+                state.point = point;
+            }
+            return;
+        }
+
+        this.clearGitHubHoverCardTimer(state);
+        state.key = undefined;
+        state.pendingKey = key;
+        state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
+        state.linkInfo = linkInfo;
+        state.point = point;
+        state.reference = reference;
+        this.stopGitHubHoverCardLoading(state);
+        state.element.removeClass('is-visible');
+
+        const win = doc.defaultView ?? window;
+        state.showTimeout = win.setTimeout(() => {
+            if (state.pendingKey !== key || !state.linkInfo || !state.reference || !state.point) return;
+
+            state.key = key;
+            state.pendingKey = undefined;
+            const cachedData = this.getCachedGitHubHoverCardData(state.linkInfo.url);
+            if (cachedData) {
+                this.renderGitHubHoverCard(state.element, cachedData);
+            } else {
+                this.renderGitHubHoverCard(
+                    state.element,
+                    this.createGitHubHoverCardFallbackData(state.linkInfo, state.reference),
+                    { showDescriptionSkeleton: true }
+                );
+                this.startGitHubHoverCardLoading(state, key);
+                void this.loadGitHubHoverCardData(state, state.linkInfo, state.reference, key);
+            }
+            this.positionGitHubHoverCard(state.element, state.point);
+            state.element.addClass('is-visible');
+        }, GITHUB_HOVER_CARD_DELAY_MS);
+    }
+
+    private getGitHubHoverCard(doc: Document): GitHubHoverCardState {
+        const existingState = this.githubHoverCards.get(doc);
+        if (existingState) return existingState;
+
+        const element = doc.createElement('div');
+        element.addClass('url-preview-github-hover-card');
+        doc.body.appendChild(element);
+
+        const state = { element, requestId: 0 };
+        this.githubHoverCards.set(doc, state);
+        return state;
+    }
+
+    private hideGitHubHoverCard(doc: Document) {
+        const state = this.githubHoverCards.get(doc);
+        if (!state) return;
+
+        this.clearGitHubHoverCardTimer(state);
+        this.clearGitHubHoverCardHideTimer(state);
+        state.key = undefined;
+        state.pendingKey = undefined;
+        state.hoverZone = undefined;
+        state.linkInfo = undefined;
+        state.point = undefined;
+        state.reference = undefined;
+        this.stopGitHubHoverCardLoading(state);
+        state.element.removeClass('is-visible');
+    }
+
+    private removeGitHubHoverCard(doc: Document) {
+        const state = this.githubHoverCards.get(doc);
+        if (!state) return;
+
+        this.clearGitHubHoverCardTimer(state);
+        this.clearGitHubHoverCardHideTimer(state);
+        this.stopGitHubHoverCardLoading(state);
+        state.element.remove();
+        this.githubHoverCards.delete(doc);
+    }
+
+    private clearGitHubHoverCardTimer(state: GitHubHoverCardState) {
+        if (!state.showTimeout) return;
+
+        const win = state.element.ownerDocument.defaultView ?? window;
+        win.clearTimeout(state.showTimeout);
+        state.showTimeout = undefined;
+    }
+
+    private scheduleGitHubHoverCardHide(doc: Document) {
+        const state = this.githubHoverCards.get(doc);
+        if (!state) return;
+
+        this.clearGitHubHoverCardHideTimer(state);
+        const win = state.element.ownerDocument.defaultView ?? window;
+        state.hideTimeout = win.setTimeout(() => {
+            this.hideGitHubHoverCard(doc);
+        }, GITHUB_HOVER_CARD_HIDE_DELAY_MS);
+    }
+
+    private clearGitHubHoverCardHideTimer(state: GitHubHoverCardState) {
+        if (!state.hideTimeout) return;
+
+        const win = state.element.ownerDocument.defaultView ?? window;
+        win.clearTimeout(state.hideTimeout);
+        state.hideTimeout = undefined;
+    }
+
+    private isPointInGitHubHoverCardHoverZone(state: GitHubHoverCardState, point: ScreenPoint): boolean {
+        if (!state.linkInfo && !state.hoverZone) return false;
+
+        const hoverZone = state.hoverZone ?? (
+            state.linkInfo ? this.getInlinePreviewLineHoverRect(state.linkInfo) : null
+        );
+        if (!hoverZone) return false;
+
+        return point.x >= hoverZone.left &&
+            point.x <= hoverZone.right &&
+            point.y >= hoverZone.top &&
+            point.y <= hoverZone.bottom;
+    }
+
+    private getGitHubHoverCardKey(linkInfo: LinkInfo, reference: GitHubIssueReference): string {
+        return `${linkInfo.url}:${reference.shortReference}`;
+    }
+
+    private startGitHubHoverCardLoading(state: GitHubHoverCardState, key: string) {
+        state.loadingKey = key;
+    }
+
+    private finishGitHubHoverCardLoading(state: GitHubHoverCardState, key: string) {
+        if (state.loadingKey !== key) return;
+
+        this.stopGitHubHoverCardLoading(state);
+    }
+
+    private stopGitHubHoverCardLoading(state: GitHubHoverCardState) {
+        state.loadingKey = undefined;
+    }
+
+    private async loadGitHubHoverCardData(
+        state: GitHubHoverCardState,
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference,
+        key: string
+    ) {
+        const requestId = state.requestId + 1;
+        state.requestId = requestId;
+
+        const data = await this.getGitHubHoverCardData(linkInfo, reference);
+        if (state.requestId !== requestId || state.key !== key || !state.linkInfo || !state.point) return;
+
+        this.finishGitHubHoverCardLoading(state, key);
+        this.renderGitHubHoverCard(state.element, data);
+        this.positionGitHubHoverCard(state.element, state.point);
+    }
+
+    private renderGitHubHoverCard(
+        card: HTMLElement,
+        data: GitHubHoverCardData,
+        options: { showDescriptionSkeleton?: boolean } = {}
+    ) {
+        card.empty();
+
+        const header = card.createDiv('url-preview-github-hover-card-header');
+        const referenceLabel = `${data.repoLabel}#${data.id}`;
+        const referenceAction = header.createSpan('url-preview-github-hover-card-reference-action');
+        referenceAction.setAttr('role', 'button');
+        referenceAction.setAttr('tabindex', '0');
+        referenceAction.createSpan({ cls: 'url-preview-github-hover-card-repo', text: referenceLabel });
+        const copyIcon = referenceAction.createSpan('url-preview-github-hover-card-copy-icon');
+        setIcon(copyIcon, 'clipboard');
+        referenceAction.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyGitHubReference(data.shortReference);
+        });
+        referenceAction.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyGitHubReference(data.shortReference);
+        });
+
+        const titleRow = card.createDiv('url-preview-github-hover-card-title-row');
+        const stateClass = data.state ? ` is-${data.state.toLowerCase()}` : '';
+        const icon = titleRow.createSpan(`url-preview-github-hover-card-icon${stateClass}`);
+        setIcon(icon, data.type === 'pull' ? 'git-pull-request' : 'circle-dot');
+        const titleAction = titleRow.createSpan('url-preview-github-hover-card-title-action');
+        titleAction.setAttr('role', 'button');
+        titleAction.setAttr('tabindex', '0');
+        titleAction.createSpan({ cls: 'url-preview-github-hover-card-title', text: data.title });
+        const titleCopyIcon = titleAction.createSpan('url-preview-github-hover-card-copy-icon');
+        setIcon(titleCopyIcon, 'clipboard');
+        titleAction.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyTextToClipboard(data.title, 'title');
+        });
+        titleAction.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            void this.copyTextToClipboard(data.title, 'title');
+        });
+
+        if (data.description) {
+            const descriptionShell = card.createDiv('url-preview-github-hover-card-description-shell');
+            descriptionShell.createDiv({ cls: 'url-preview-github-hover-card-description', text: data.description });
+        } else if (options.showDescriptionSkeleton) {
+            const descriptionShell = card.createDiv(
+                'url-preview-github-hover-card-description-shell is-skeleton'
+            );
+            const skeleton = descriptionShell.createDiv({
+                cls: 'url-preview-github-hover-card-description-skeleton',
+                text: 'mmmmmmmmm mmmmmmmm mmmmmmmmm mmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmm mmmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmmmm mmmmmmm mmmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmmmmm',
+            });
+            skeleton.setAttr('aria-hidden', 'true');
+        }
+    }
+
+    private positionGitHubHoverCard(card: HTMLElement, point: ScreenPoint) {
+        const win = card.ownerDocument.defaultView ?? window;
+        const cardRect = this.measureGitHubHoverCard(card);
+        const cardWidth = cardRect.width || Math.min(420, win.innerWidth - GITHUB_HOVER_CARD_MARGIN * 2);
+        const cardHeight = cardRect.height || 160;
+        const maxLeft = Math.max(GITHUB_HOVER_CARD_MARGIN, win.innerWidth - cardWidth - GITHUB_HOVER_CARD_MARGIN);
+        const left = Math.max(
+            GITHUB_HOVER_CARD_MARGIN,
+            Math.min(point.x - cardWidth / 2, maxLeft)
+        );
+        const canFitBelow = point.y + GITHUB_HOVER_CARD_GAP + cardHeight + GITHUB_HOVER_CARD_MARGIN <= win.innerHeight;
+        const canFitAbove = point.y - GITHUB_HOVER_CARD_GAP - cardHeight >= GITHUB_HOVER_CARD_MARGIN;
+        const showAbove = !canFitBelow && canFitAbove;
+        const unclampedTop = showAbove
+            ? point.y - cardHeight - GITHUB_HOVER_CARD_GAP
+            : point.y + GITHUB_HOVER_CARD_GAP;
+        const maxTop = win.innerHeight - cardHeight - GITHUB_HOVER_CARD_MARGIN;
+        const top = Math.max(GITHUB_HOVER_CARD_MARGIN, Math.min(unclampedTop, maxTop));
+
+        card.setCssStyles({
+            left: `${left}px`,
+            top: `${top}px`,
+        });
+    }
+
+    private measureGitHubHoverCard(card: HTMLElement): DOMRect {
+        const wasMeasuring = card.classList.contains('is-measuring');
+        card.addClass('is-measuring');
+        const rect = card.getBoundingClientRect();
+        if (!wasMeasuring) {
+            card.removeClass('is-measuring');
+        }
+
+        return rect;
+    }
+
+    private createGitHubHoverCardFallbackData(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): GitHubHoverCardData {
+        return {
+            description: null,
+            id: reference.id,
+            repoLabel: `${reference.owner}/${reference.repo}`,
+            shortReference: reference.shortReference,
+            state: null,
+            title: this.getGitHubHoverCardLinkTitle(linkInfo, reference) ??
+                `${reference.type === 'pull' ? 'Pull request' : 'Issue'} #${reference.id}`,
+            type: reference.type,
+        };
+    }
+
+    private async getGitHubHoverCardData(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): Promise<GitHubHoverCardData> {
+        const cached = this.githubHoverCardDataCache.get(linkInfo.url);
+        if (cached) return cached;
+
+        const promise = this.fetchGitHubHoverCardData(linkInfo, reference)
+            .then((data) => {
+                this.githubHoverCardDataCache.set(linkInfo.url, data);
+                return data;
+            })
+            .catch(() => {
+                const data = this.createGitHubHoverCardFallbackData(linkInfo, reference);
+                this.githubHoverCardDataCache.set(linkInfo.url, data);
+                return data;
+            });
+
+        this.githubHoverCardDataCache.set(linkInfo.url, promise);
+        return promise;
+    }
+
+    private getCachedGitHubHoverCardData(url: string): GitHubHoverCardData | null {
+        const cached = this.githubHoverCardDataCache.get(url);
+        if (!cached || 'then' in cached) return null;
+
+        return cached;
+    }
+
+    private async fetchGitHubHoverCardData(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): Promise<GitHubHoverCardData> {
+        const fallbackData = this.createGitHubHoverCardFallbackData(linkInfo, reference);
+        const html = await this.fetchPageHtml(linkInfo.url);
+        const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
+        const title = this.extractGitHubPageTitle(parsedDocument, linkInfo.url) ?? fallbackData.title;
+
+        return {
+            ...fallbackData,
+            description: this.extractGitHubHoverCardDescription(parsedDocument, title),
+            state: this.extractGitHubHoverCardState(parsedDocument),
+            title,
+        };
+    }
+
+    private getGitHubHoverCardLinkTitle(
+        linkInfo: LinkInfo,
+        reference: GitHubIssueReference
+    ): string | null {
+        const text = this.cleanPageTitle(linkInfo.markdownLink?.text ?? linkInfo.element.textContent);
+        if (!text || this.normalizeUrl(text)) return null;
+        if (text === reference.shortReference) return null;
+
+        const withoutTrailingId = this.cleanPageTitle(text.replace(new RegExp(`\\s*#${reference.id}\\s*$`), ''));
+        return withoutTrailingId && withoutTrailingId !== reference.shortReference ? withoutTrailingId : null;
+    }
+
+    private extractGitHubHoverCardDescription(doc: Document, title: string): string | null {
+        const commentText = this.cleanPageTitle(doc.querySelector('.comment-body')?.textContent);
+        const metaText = this.getFirstMetaContent(doc, [
+            'meta[property="og:description"]',
+            'meta[name="description"]',
+        ]);
+        const description = commentText ?? metaText;
+        if (!description || description === title || /github is where/i.test(description)) return null;
+
+        return this.truncateText(description, GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH);
+    }
+
+    private extractGitHubHoverCardState(doc: Document): GitHubIssueState | null {
+        const header = doc.querySelector('[data-component="PH_Title"]')?.closest('header') ??
+            doc.querySelector('.gh-header');
+        const stateElement = header?.querySelector(
+            '[data-status], .State, [data-testid="issue-state"], [data-testid="issue-state-badge"], [data-testid="pr-state-badge"]'
+        );
+        if (stateElement) {
+            const state = this.extractGitHubStateFromElement(stateElement);
+            if (state) return state;
+        }
+
+        const legacyHeaderState = doc.querySelector('.gh-header-meta .State');
+        if (!legacyHeaderState) return null;
+
+        return this.extractGitHubStateFromElement(legacyHeaderState);
+    }
+
+    private extractGitHubStateFromElement(element: Element): GitHubIssueState | null {
+        const status = element.getAttribute('data-status') ?? '';
+        const className = typeof element.className === 'string' ? element.className : '';
+        const text = this.cleanPageTitle(element.textContent) ?? '';
+        const title = element.getAttribute('title') ?? '';
+
+        return this.normalizeGitHubIssueState(`${status} ${className} ${title} ${text}`);
+    }
+
+    private normalizeGitHubIssueState(value: string): GitHubIssueState | null {
+        const normalized = value.toLowerCase();
+        if (normalized.includes('draft')) return 'Draft';
+        if (normalized.includes('merged')) return 'Merged';
+        if (normalized.includes('closed')) return 'Closed';
+        if (normalized.includes('open')) return 'Open';
+        return null;
+    }
+
+    private truncateText(text: string, maxLength: number): string {
+        if (text.length <= maxLength) return text;
+
+        const truncated = text.slice(0, maxLength - 1).trimEnd();
+        return `${truncated}...`;
+    }
+
+    private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
+        const state = this.getInlinePreviewControls(doc);
+        const iconPosition = this.getInlinePreviewControlsPosition(linkInfo, point, state.container);
+        if (!iconPosition) {
+            this.hideInlinePreviewControls(doc);
+            return;
+        }
+
+        state.container.setCssStyles({
+            left: `${iconPosition.left}px`,
+            top: `${iconPosition.top}px`,
+        });
+        state.container.addClass('is-visible');
+        state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
+        state.target = linkInfo;
+
+        if (this.canInlineConvertGitHubUrl(linkInfo)) {
+            state.githubConvertButton.removeClass('is-hidden');
+        } else {
+            state.githubConvertButton.addClass('is-hidden');
+        }
+    }
+
+    private getInlinePreviewControls(doc: Document): InlinePreviewControlsState {
+        const existingState = this.inlinePreviewControls.get(doc);
+        if (existingState) return existingState;
+
+        const container = doc.createElement('span');
+        container.addClass('url-preview-inline-controls');
+
+        const githubConvertButton = container.createEl('button', { cls: 'url-preview-inline-button is-hidden' });
+        githubConvertButton.setAttr('type', 'button');
+        githubConvertButton.setAttr('aria-label', 'Convert to Markdown link');
+        setIcon(githubConvertButton, 'github');
+        setTooltip(githubConvertButton, 'Convert to Markdown link', TOOLBAR_TOOLTIP_OPTIONS);
+
+        githubConvertButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const state = this.inlinePreviewControls.get(doc);
+            const targetInfo = state?.target;
+            if (!targetInfo?.editorView || !targetInfo.markdownLink) return;
+
+            this.hideInlinePreviewControls(doc);
+            void this.convertEditorViewLinkToMarkdown(targetInfo.editorView, targetInfo.markdownLink);
+        });
+
+        const previewButton = container.createEl('button', { cls: 'url-preview-inline-button' });
+        previewButton.setAttr('type', 'button');
+        previewButton.setAttr('aria-label', 'Preview link');
+        setIcon(previewButton, 'eye');
+        setTooltip(previewButton, 'Preview link', TOOLBAR_TOOLTIP_OPTIONS);
+
+        previewButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const state = this.inlinePreviewControls.get(doc);
+            if (!state?.target) return;
+
+            const targetInfo = state.target;
+            this.hideInlinePreviewControls(doc);
+            this.showPreview(
+                targetInfo.element,
+                targetInfo.url,
+                targetInfo.hoverElement,
+                targetInfo.sourceKey
+            );
+        });
+
+        doc.body.appendChild(container);
+
+        const state = { container, githubConvertButton, previewButton };
+        this.inlinePreviewControls.set(doc, state);
+
+        return state;
+    }
+
+    private getInlinePreviewControlsPosition(
+        linkInfo: LinkInfo,
+        point: ScreenPoint,
+        controlsEl: HTMLElement
+    ): { left: number; top: number } | null {
+        const rect = this.getInlinePreviewAnchorRect(linkInfo, point);
+        if (!rect) return null;
+
+        const adornmentRight = this.getExternalLinkAdornmentRight(linkInfo.element, rect, controlsEl);
+        return {
+            left: adornmentRight + INLINE_CONTROLS_GAP,
+            top: rect.top + (rect.height - INLINE_CONTROLS_SIZE) / 2,
+        };
+    }
+
+    private getInlinePreviewAnchorRect(linkInfo: LinkInfo, point: ScreenPoint): ViewRect | null {
+        const editorLinkEndRect = this.getEditorLinkEndRect(linkInfo);
+        if (editorLinkEndRect) return editorLinkEndRect;
+
+        return this.getClientRectForPoint(linkInfo.element, point);
+    }
+
+    private getEditorLinkEndRect(linkInfo: LinkInfo): ViewRect | null {
+        if (!linkInfo.editorView || !linkInfo.markdownLink) return null;
+
+        const contentLength = linkInfo.editorView.state.doc.length;
+        const linkEnd = Math.min(contentLength, Math.max(0, linkInfo.markdownLink.end));
+        const coords = linkInfo.editorView.coordsAtPos(linkEnd, 1) ??
+            linkInfo.editorView.coordsAtPos(Math.max(0, linkEnd - 1), 1);
+        if (!coords) return null;
+
+        return this.toViewRect(coords);
+    }
+
+    private toViewRect(rect: { bottom: number; left: number; right: number; top: number }): ViewRect {
+        const left = Math.min(rect.left, rect.right);
+        const right = Math.max(rect.left, rect.right);
+        const top = Math.min(rect.top, rect.bottom);
+        const bottom = Math.max(rect.top, rect.bottom);
+
+        return {
+            bottom,
+            height: Math.max(1, bottom - top),
+            left,
+            right,
+            top,
+            width: Math.max(1, right - left),
+        };
+    }
+
+    private getExternalLinkAdornmentRight(element: HTMLElement, rect: ViewRect, controlsEl: HTMLElement): number {
+        const doc = element.ownerDocument;
+        const probeY = rect.top + rect.height / 2;
+        let right = rect.right;
+
+        for (let offset = 1; offset <= INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH; offset += 4) {
+            const elements = doc.elementsFromPoint(rect.right + offset, probeY);
+            const adornment = elements.find((candidate) =>
+                this.isExternalLinkAdornmentCandidate(candidate, element, controlsEl, rect)
+            );
+            if (!adornment) continue;
+
+            const adornmentRect = adornment.getBoundingClientRect();
+            right = Math.max(right, adornmentRect.right);
+        }
+
+        return right;
+    }
+
+    private isExternalLinkAdornmentCandidate(
+        candidate: Element,
+        linkElement: HTMLElement,
+        controlsEl: HTMLElement,
+        linkRect: ViewRect
+    ): boolean {
+        if (candidate === linkElement ||
+            linkElement.contains(candidate) ||
+            candidate === controlsEl ||
+            controlsEl.contains(candidate) ||
+            candidate === linkElement.ownerDocument.body) {
+            return false;
+        }
+
+        const rect = candidate.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        if (rect.left < linkRect.right - 2) return false;
+        if (rect.left > linkRect.right + INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH) return false;
+        if (candidate.classList.contains('url-preview-github-pr-badge')) {
+            return rect.width <= 80;
+        }
+        if (rect.width > 24 || rect.height > 24) return false;
+
+        return true;
+    }
+
+    private isPointInInlineControlsHoverZone(state: InlinePreviewControlsState, point: ScreenPoint): boolean {
+        if (!state.target) return false;
+
+        if (state.hoverZone &&
+            point.x >= state.hoverZone.left &&
+            point.x <= state.hoverZone.right &&
+            point.y >= state.hoverZone.top &&
+            point.y <= state.hoverZone.bottom) {
+            return true;
+        }
+
+        const linkRect = this.getInlinePreviewAnchorRect(state.target, point);
+        const controlsRect = state.container.getBoundingClientRect();
+        if (!linkRect || controlsRect.width === 0 || controlsRect.height === 0) return false;
+
+        const top = Math.min(linkRect.top, controlsRect.top) - INLINE_CONTROLS_HOVER_PADDING_Y;
+        const bottom = Math.max(linkRect.bottom, controlsRect.bottom) + INLINE_CONTROLS_HOVER_PADDING_Y;
+        const left = Math.min(linkRect.right, controlsRect.left) - INLINE_CONTROLS_HOVER_PADDING_X;
+        const right = controlsRect.right + INLINE_CONTROLS_HOVER_PADDING_X;
+
+        return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
+    }
+
+    private getInlinePreviewLineHoverRect(linkInfo: LinkInfo): ViewRect | null {
+        const lineElement = this.getInlinePreviewLineElement(linkInfo.element);
+        const doc = linkInfo.element.ownerDocument;
+        const win = doc.defaultView ?? window;
+        const lineRect = lineElement ? this.toViewRect(lineElement.getBoundingClientRect()) : null;
+        const linkRects = Array.from(linkInfo.element.getClientRects()).map((rect) => this.toViewRect(rect));
+        const rects = [
+            ...(lineRect ? [lineRect] : []),
+            ...linkRects,
+        ].filter((rect) => rect.width > 0 && rect.height > 0);
+        if (rects.length === 0) return null;
+
+        const top = Math.max(0, Math.min(...rects.map((rect) => rect.top)) - INLINE_CONTROLS_HOVER_PADDING_Y);
+        const bottom = Math.min(
+            win.innerHeight,
+            Math.max(...rects.map((rect) => rect.bottom)) + INLINE_CONTROLS_HOVER_PADDING_Y
+        );
+
+        return {
+            bottom,
+            height: Math.max(1, bottom - top),
+            left: 0,
+            right: win.innerWidth,
+            top,
+            width: win.innerWidth,
+        };
+    }
+
+    private findInlinePreviewLineLinkElement(target: Element, point: ScreenPoint): LinkInfo | null {
+        if (!(target instanceof HTMLElement)) return null;
+
+        const lineElement = this.getInlinePreviewLineElement(target);
+        if (!lineElement) return null;
+
+        let nearestLinkInfo: LinkInfo | null = null;
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        const linkElements = Array.from(lineElement.querySelectorAll(EDITOR_LINK_SELECTOR));
+
+        for (const linkElement of linkElements) {
+            if (!(linkElement instanceof HTMLElement)) continue;
+
+            const linkRect = this.getInlinePreviewLineLinkRect(linkElement, point);
+            if (!linkRect) continue;
+
+            const candidatePoint = {
+                x: linkRect.left + linkRect.width / 2,
+                y: linkRect.top + linkRect.height / 2,
+            };
+            const linkInfo = this.findLinkElement(linkElement, null, candidatePoint);
+            if (!linkInfo) continue;
+
+            const distance = point.x < linkRect.left
+                ? linkRect.left - point.x
+                : Math.max(0, point.x - linkRect.right);
+            if (distance >= nearestDistance) continue;
+
+            nearestDistance = distance;
+            nearestLinkInfo = linkInfo;
+        }
+
+        return nearestLinkInfo;
+    }
+
+    private getInlinePreviewLineLinkRect(element: HTMLElement, point: ScreenPoint): ViewRect | null {
+        const rects = Array.from(element.getClientRects())
+            .map((rect) => this.toViewRect(rect))
+            .filter((rect) =>
+                rect.width > 0 &&
+                rect.height > 0 &&
+                point.y >= rect.top - INLINE_CONTROLS_HOVER_PADDING_Y &&
+                point.y <= rect.bottom + INLINE_CONTROLS_HOVER_PADDING_Y
+            );
+
+        if (rects.length === 0) return null;
+
+        return rects.reduce((nearest, rect) => {
+            const nearestDistance = this.getHorizontalDistanceToRect(point, nearest);
+            const distance = this.getHorizontalDistanceToRect(point, rect);
+            return distance < nearestDistance ? rect : nearest;
+        });
+    }
+
+    private getHorizontalDistanceToRect(point: ScreenPoint, rect: ViewRect): number {
+        if (point.x < rect.left) return rect.left - point.x;
+        if (point.x > rect.right) return point.x - rect.right;
+        return 0;
+    }
+
+    private isSourceModeMarkdownTarget(element: Element): boolean {
+        const sourceView = element.closest('.markdown-source-view');
+        return sourceView instanceof HTMLElement && !sourceView.classList.contains('is-live-preview');
+    }
+
+    private getInlinePreviewLineElement(element: HTMLElement): HTMLElement | null {
+        const lineElement = element.closest('.cm-line, li, p, h1, h2, h3, h4, h5, h6, td, th, blockquote');
+        return lineElement instanceof HTMLElement ? lineElement : null;
+    }
+
+    private canInlineConvertGitHubUrl(linkInfo: LinkInfo): boolean {
+        return Boolean(
+            linkInfo.editorView &&
+            linkInfo.markdownLink &&
+            this.isGitHubUrl(linkInfo.url) &&
+            this.isBareMarkdownUrl(linkInfo.markdownLink)
+        );
+    }
+
+    private getClientRectForPoint(element: HTMLElement, point: ScreenPoint): ViewRect | null {
+        const rects = Array.from(element.getClientRects());
+        if (rects.length === 0) return null;
+
+        const rect = rects.find((rect) =>
+            point.y >= rect.top &&
+            point.y <= rect.bottom &&
+            point.x >= rect.left &&
+            point.x <= rect.right
+        ) ?? rects.find((rect) =>
+            point.y >= rect.top &&
+            point.y <= rect.bottom
+        ) ?? rects[rects.length - 1];
+
+        return this.toViewRect(rect);
+    }
+
+    private hideInlinePreviewControls(doc: Document) {
+        const state = this.inlinePreviewControls.get(doc);
+        if (!state) return;
+
+        state.container.removeClass('is-visible');
+        state.hoverZone = undefined;
+        state.target = undefined;
+    }
+
+    private removeInlinePreviewControls(doc: Document) {
+        const state = this.inlinePreviewControls.get(doc);
+        if (!state) return;
+
+        state.container.remove();
+        this.inlinePreviewControls.delete(doc);
+    }
+
+    private hideEditorHoverUi(doc: Document) {
+        this.hideInlinePreviewControls(doc);
+        this.hideGitHubHoverCard(doc);
+    }
+
+    private hideAllEditorHoverUi() {
+        for (const doc of this.handledDocuments) {
+            this.hideEditorHoverUi(doc);
+        }
+    }
+
+    private isSourceModeToggleEvent(event: KeyboardEvent): boolean {
+        const isSlash = event.key === '/' || event.code === 'Slash';
+        if (!isSlash) return false;
+
+        return Platform.isMacOS ? event.metaKey : event.ctrlKey;
+    }
+
+    private addConvertToMarkdownLinkMenuItemForUrl(menu: Menu, url: string) {
+        const activeMarkdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!activeMarkdownView) return;
+
+        this.addConvertToMarkdownLinkMenuItem(menu, activeMarkdownView.editor, url, true);
+    }
+
+    private addConvertToMarkdownLinkMenuItem(
+        menu: Menu,
+        editor: Editor,
+        expectedUrl?: string,
+        requireRecentContext = false
+    ) {
+        if (this.convertLinkMenus.has(menu)) return;
+
+        const link = requireRecentContext
+            ? this.getRecentEditorContextLink(editor.getValue(), expectedUrl ? this.normalizeUrl(expectedUrl) : null)
+            : this.getEditorContextLink(editor, expectedUrl);
+        if (!link) return;
+
+        this.convertLinkMenus.add(menu);
+        menu.addItem((item) => {
+            item
+                .setTitle(this.isBareMarkdownUrl(link) ? 'Convert URL to Markdown link' : 'Use page title as link text')
+                .setIcon('link')
+                .onClick(() => {
+                    void this.convertEditorLinkToMarkdown(editor, link);
+                });
+        });
+    }
+
+    private getEditorContextLink(editor: Editor, expectedUrl?: string): ParsedMarkdownLink | null {
+        const content = editor.getValue();
+        const normalizedExpectedUrl = expectedUrl ? this.normalizeUrl(expectedUrl) : null;
+        const recentLink = this.getRecentEditorContextLink(content, normalizedExpectedUrl);
+        if (recentLink) return recentLink;
+
+        const selectedLink = this.getSelectedBareUrlLink(editor, normalizedExpectedUrl);
+        if (selectedLink) return selectedLink;
+
+        return this.getEditorLinkAtCursor(editor, content, normalizedExpectedUrl);
+    }
+
+    private getRecentEditorContextLink(content: string, expectedUrl: string | null): ParsedMarkdownLink | null {
+        if (!this.lastEditorContextLink) return null;
+        if (Date.now() - this.lastEditorContextLink.timestamp > 2500) return null;
+
+        const { link, rawText } = this.lastEditorContextLink;
+        if (!this.linkMatchesExpectedUrl(link, expectedUrl)) return null;
+        if (content.slice(link.start, link.end) !== rawText) return null;
+
+        return link;
+    }
+
+    private getSelectedBareUrlLink(editor: Editor, expectedUrl: string | null): ParsedMarkdownLink | null {
+        if (!editor.somethingSelected()) return null;
+
+        const selection = editor.getSelection();
+        const selectedUrlText = selection.trim();
+        const url = this.normalizeUrl(selectedUrlText);
+        if (!url || !this.urlMatchesExpectedUrl(url, expectedUrl)) return null;
+
+        const selectionStart = editor.posToOffset(editor.getCursor('from'));
+        const leadingWhitespaceLength = selection.length - selection.trimStart().length;
+        const start = selectionStart + leadingWhitespaceLength;
+        const end = start + selectedUrlText.length;
+
+        return this.createBareMarkdownUrlLink(start, end, selectedUrlText, url);
+    }
+
+    private getEditorLinkAtCursor(
+        editor: Editor,
+        content: string,
+        expectedUrl: string | null
+    ): ParsedMarkdownLink | null {
+        const offsets = new Set<number>();
+        for (const cursorSide of ['from', 'to', 'head'] as const) {
+            const offset = editor.posToOffset(editor.getCursor(cursorSide));
+            offsets.add(offset);
+            offsets.add(Math.max(0, offset - 1));
+            offsets.add(Math.min(content.length, offset + 1));
+        }
+
+        const markdownLinks = this.parseMarkdownLinks(content);
+        for (const offset of offsets) {
+            const link = this.findParsedMarkdownLinkAtOffset(markdownLinks, offset);
+            if (link && this.linkMatchesExpectedUrl(link, expectedUrl)) {
+                return link;
+            }
+        }
+
+        for (const offset of offsets) {
+            const link = this.getBareMarkdownUrlAtOffset(content, offset);
+            if (link && this.linkMatchesExpectedUrl(link, expectedUrl)) {
+                return link;
+            }
+        }
+
+        return null;
+    }
+
+    private async convertEditorLinkToMarkdown(editor: Editor, originalLink: ParsedMarkdownLink) {
+        let link = this.resolveCurrentEditorLink(editor, originalLink);
+        if (!link) {
+            new Notice('Could not find the link anymore.');
+            return;
+        }
+
+        const notice = new Notice('Fetching page title...', 0);
+        const title = await this.fetchPageTitleForNotice(link.url, notice);
+        if (!title) return;
+
+        link = this.resolveCurrentEditorLink(editor, link);
+        if (!link) {
+            notice.hide();
+            new Notice('The link changed before it could be converted.');
+            return;
+        }
+
+        const replacement = this.createMarkdownLinkReplacement(title, link.url);
+        editor.replaceRange(
+            replacement,
+            editor.offsetToPos(link.start),
+            editor.offsetToPos(link.end),
+            'url-preview-convert-link'
+        );
+        editor.setCursor(editor.offsetToPos(link.start + replacement.length));
+
+        notice.setMessage('Converted URL to Markdown link.');
+        window.setTimeout(() => notice.hide(), 1200);
+    }
+
+    private async convertEditorViewLinkToMarkdown(editorView: EditorView, originalLink: ParsedMarkdownLink) {
+        let link = this.resolveCurrentEditorViewLink(editorView, originalLink);
+        if (!link) {
+            new Notice('Could not find the link anymore.');
+            return;
+        }
+
+        const notice = new Notice('Fetching GitHub title...', 0);
+        const title = await this.fetchPageTitleForNotice(link.url, notice);
+        if (!title) return;
+
+        link = this.resolveCurrentEditorViewLink(editorView, link);
+        if (!link) {
+            notice.hide();
+            new Notice('The link changed before it could be converted.');
+            return;
+        }
+
+        const replacement = this.createMarkdownLinkReplacement(title, link.url);
+        editorView.dispatch({
+            changes: { from: link.start, insert: replacement, to: link.end },
+            selection: { anchor: link.start + replacement.length },
+            scrollIntoView: true,
+        });
+        editorView.focus();
+
+        notice.setMessage('Converted GitHub URL to Markdown link.');
+        window.setTimeout(() => notice.hide(), 1200);
+    }
+
+    private async fetchPageTitleForNotice(url: string, notice: Notice): Promise<string | null> {
+        try {
+            const title = await this.fetchPageTitle(url);
+            if (!title) {
+                notice.hide();
+                new Notice('Could not find a page title for this URL.');
+                return null;
+            }
+            return title;
+        } catch {
+            notice.hide();
+            new Notice('Could not fetch the page title.');
+            return null;
+        }
+    }
+
+    private resolveCurrentEditorLink(editor: Editor, originalLink: ParsedMarkdownLink): ParsedMarkdownLink | null {
+        return this.resolveCurrentLinkInContent(editor.getValue(), originalLink);
+    }
+
+    private resolveCurrentLinkInContent(content: string, originalLink: ParsedMarkdownLink): ParsedMarkdownLink | null {
+        const offsets = [
+            originalLink.start,
+            Math.min(content.length, originalLink.start + 1),
+            Math.max(0, originalLink.end - 1),
+        ];
+        const markdownLinks = this.parseMarkdownLinks(content);
+
+        for (const offset of offsets) {
+            const link = this.findParsedMarkdownLinkAtOffset(markdownLinks, offset);
+            if (link?.url === originalLink.url) {
+                return link;
+            }
+        }
+
+        for (const offset of offsets) {
+            const link = this.getBareMarkdownUrlAtOffset(content, offset);
+            if (link?.url === originalLink.url) {
+                return link;
+            }
+        }
+
+        return null;
+    }
+
+    private resolveCurrentEditorViewLink(editorView: EditorView, originalLink: ParsedMarkdownLink): ParsedMarkdownLink | null {
+        return this.resolveCurrentLinkInContent(editorView.state.doc.toString(), originalLink);
+    }
+
+    private isBareMarkdownUrl(link: ParsedMarkdownLink): boolean {
+        return link.start === link.textStart &&
+            link.end === link.textEnd &&
+            link.start === link.destinationStart &&
+            link.end === link.destinationEnd;
+    }
+
+    private linkMatchesExpectedUrl(link: ParsedMarkdownLink, expectedUrl: string | null): boolean {
+        return this.urlMatchesExpectedUrl(link.url, expectedUrl);
+    }
+
+    private urlMatchesExpectedUrl(url: string, expectedUrl: string | null): boolean {
+        return !expectedUrl || url === expectedUrl;
+    }
+
+    private createMarkdownLinkReplacement(title: string, url: string): string {
+        return `[${this.escapeMarkdownLinkText(title)}](${this.formatMarkdownDestination(url)})`;
+    }
+
+    private handleLinkClick(event: MouseEvent) {
+        if (!this.areClickModifiersPressed(event)) return;
+
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (this.activePreview?.element.contains(target)) return;
+
+        const linkInfo = this.findLinkElement(target, null, { x: event.clientX, y: event.clientY });
         if (!linkInfo) return;
 
-        const { element: linkElement, hoverElement, sourceKey, url } = linkInfo;
-        const targetDoc = hoverElement.ownerDocument;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        this.openPreviewForLink(linkInfo);
+    }
 
+    private openPreviewForLink(linkInfo: LinkInfo) {
         if (this.isActivePreviewForLink(linkInfo)) {
             if (this.cleanupTimeout) {
                 window.clearTimeout(this.cleanupTimeout);
                 this.cleanupTimeout = undefined;
             }
-            this.removeLoadingIndicator();
             return;
         }
 
-        if (this.isPendingPreviewForLink(linkInfo)) {
-            return;
-        }
-
-        // Clear any existing hover timeout
-        if (this.hoverTimeout) {
-            window.clearTimeout(this.hoverTimeout);
-            this.pendingPreview = undefined;
-        }
-
-        // Clear any existing stillness check
-        if (this.stillnessCheckTimeout) {
-            window.clearTimeout(this.stillnessCheckTimeout);
-            this.stillnessCheckTimeout = undefined;
-        }
-
-        // Clean up any existing preview
         this.cleanupActivePreview();
 
-        // Set timeout for showing preview
-        this.showLoadingIndicator(targetDoc);
-        this.pendingPreview = { hoverElement, sourceKey };
-        this.hoverTimeout = window.setTimeout(() => {
-            this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
-        }, this.settings.hoverDelay);
-
-        // Add mouse leave listener to target
-        const handleMouseLeave = (e: MouseEvent) => {
-            // Skip cleanup timer if sticky popup is enabled
-            if (this.settings.stickyPopup) {
-                hoverElement.removeEventListener('mouseleave', handleMouseLeave);
-                return;
-            }
-
-            // Check if mouse moved to the preview
-            const toElement = e.relatedTarget as HTMLElement | null;
-            if (toElement && this.activePreview?.element.contains(toElement)) return;
-
-            // If preview hasn't shown yet, cancel the pending load
-            if (!this.activePreview && this.hoverTimeout) {
-                window.clearTimeout(this.hoverTimeout);
-                this.hoverTimeout = undefined;
-                this.pendingPreview = undefined;
-                this.removeLoadingIndicator();
-            } else {
-                this.startCleanupTimer();
-            }
-            hoverElement.removeEventListener('mouseleave', handleMouseLeave);
-        };
-
-        hoverElement.addEventListener('mouseleave', handleMouseLeave);
-    }
-
-    private tryShowPreview(linkElement: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
-        // If modifiers are required but no longer held, cancel
-        if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
-            this.removeLoadingIndicator();
-            this.pendingPreview = undefined;
-            return;
-        }
-        // Check mouse stillness if delay is configured
-        if (this.settings.mouseStillnessDelay > 0) {
-            const timeSinceMovement = Date.now() - this.lastMovementTime;
-            if (timeSinceMovement < this.settings.mouseStillnessDelay) {
-                // Mouse hasn't been still long enough, reschedule check
-                const remainingTime = this.settings.mouseStillnessDelay - timeSinceMovement;
-                this.stillnessCheckTimeout = window.setTimeout(() => {
-                    this.tryShowPreview(linkElement, url, hoverElement, sourceKey);
-                }, Math.min(remainingTime, 50)); // Poll at most every 50ms
-                return;
-            }
-        }
+        const { element: linkElement, hoverElement, sourceKey, url } = linkInfo;
         this.showPreview(linkElement, url, hoverElement, sourceKey);
     }
 
     private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
-        this.removeLoadingIndicator();
         this.cleanupActivePreview();
-        this.pendingPreview = undefined;
         const doc = link.ownerDocument;
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect, doc);
@@ -315,37 +1824,34 @@ export default class LinkPreviewPlugin extends Plugin {
             this.createButtons(previewEl, url);
         }
 
-        const wrapper = previewEl.createDiv('preview-iframe-wrapper');
+        previewEl.setAttr('data-preview-url', url);
 
-        // GitHub-specific: add class to enable header cropping
-        if (url.includes('github.com')) {
-            wrapper.addClass('github-preview');
-        }
+        const wrapper = previewEl.createDiv('preview-iframe-wrapper');
+        wrapper.addClass('preview-scaled-viewport');
 
         const loading = previewEl.createDiv('preview-loading');
         loading.addClass('loading-spinner');
-        
-        const iframe = doc.createElement('iframe');
-        iframe.setAttribute('src', url);
-        
-        wrapper.appendChild(iframe);
+        const loadingStartedAt = Date.now();
 
         const cleanup = () => {
             previewEl.remove();
             this.activePreview = undefined;
         };
 
+        const iframe = doc.createElement('iframe');
+
         iframe.onload = () => {
-            // Small delay to let page render before showing
-            setTimeout(() => {
-                iframe.addClass('is-loaded');
-                loading.remove();  // Remove entirely to stop infinite animation
-            }, 50);
+            this.revealLoadedIframe(iframe, loading, loadingStartedAt);
+            if (this.isGitHubUrl(url)) {
+                void this.updateGitHubAuthControls(previewEl);
+            }
         };
 
         iframe.onerror = () => {
             loading.textContent = 'Failed to load preview';
         };
+
+        wrapper.appendChild(iframe);
 
         // Add preview hover handlers
         previewEl.addEventListener('mouseenter', () => {
@@ -390,7 +1896,23 @@ export default class LinkPreviewPlugin extends Plugin {
         }
 
         doc.body.appendChild(previewEl);
+        this.applyPreviewViewportProps(previewEl, url);
+        this.loadPreviewIframe(iframe, url);
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
+    }
+
+    private revealLoadedIframe(iframe: HTMLIFrameElement, loading: HTMLElement, loadingStartedAt: number) {
+        const win = iframe.ownerDocument.defaultView ?? window;
+        win.requestAnimationFrame(() => {
+            win.requestAnimationFrame(() => {
+                iframe.addClass('is-loaded');
+                const elapsed = Date.now() - loadingStartedAt;
+                const remainingMinimum = Math.max(0, MIN_PREVIEW_LOADING_MS - elapsed);
+                win.setTimeout(() => {
+                    loading.remove();
+                }, Math.max(remainingMinimum, POST_LOAD_SPINNER_MS));
+            });
+        });
     }
 
     private cleanupTimeout?: number;
@@ -436,7 +1958,6 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private cleanupActivePreview() {
-        this.removeLoadingIndicator();
         if (this.activeResizeCleanup) {
             this.activeResizeCleanup();
             this.activeResizeCleanup = undefined;
@@ -445,107 +1966,38 @@ export default class LinkPreviewPlugin extends Plugin {
             this.activePreview.cleanup();
             this.activePreview = undefined;
         }
-        if (this.hoverTimeout) {
-            window.clearTimeout(this.hoverTimeout);
-            this.hoverTimeout = undefined;
-            this.pendingPreview = undefined;
-        }
         if (this.cleanupTimeout) {
             window.clearTimeout(this.cleanupTimeout);
             this.cleanupTimeout = undefined;
-        }
-        if (this.stillnessCheckTimeout) {
-            window.clearTimeout(this.stillnessCheckTimeout);
-            this.stillnessCheckTimeout = undefined;
         }
         // Safety net: remove any orphaned preview popups
         this.removeOrphanedPreviews();
     }
 
-    private isModifierKeyPressed(event: MouseEvent): boolean {
+    private areClickModifiersPressed(event: MouseEvent): boolean {
+        return this.areConfiguredModifiersPressed(this.getModifierState(event));
+    }
+
+    private areConfiguredModifiersPressed(modifiers: ModifierState): boolean {
         const keys = this.settings.modifierKeys;
-        // Check if ALL required modifiers are pressed
-        if (keys.meta && !event.metaKey) return false;
-        if (keys.ctrl && !event.ctrlKey) return false;
-        if (keys.alt && !event.altKey) return false;
-        if (keys.shift && !event.shiftKey) return false;
-        // At least one modifier must be required
+        if (keys.meta && !modifiers.metaKey) return false;
+        if (keys.ctrl && !modifiers.ctrlKey) return false;
+        if (keys.alt && !modifiers.altKey) return false;
+        if (keys.shift && !modifiers.shiftKey) return false;
         return keys.meta || keys.ctrl || keys.alt || keys.shift;
     }
 
-    private isModifierKeyEvent(event: KeyboardEvent): boolean {
-        const keys = this.settings.modifierKeys;
-        // Return true if any required modifier key is pressed or released
-        if (keys.meta && event.key === 'Meta') return true;
-        if (keys.ctrl && event.key === 'Control') return true;
-        if (keys.alt && event.key === 'Alt') return true;
-        if (keys.shift && event.key === 'Shift') return true;
-        return false;
+    private getModifierState(event: MouseEvent | KeyboardEvent): ModifierState {
+        return {
+            altKey: event.altKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            shiftKey: event.shiftKey,
+        };
     }
 
-    private areAllModifiersPressed(): boolean {
-        const keys = this.settings.modifierKeys;
-        // Check if ALL required modifiers are currently pressed (using tracked state)
-        if (keys.meta && !this.modifierState.meta) return false;
-        if (keys.ctrl && !this.modifierState.ctrl) return false;
-        if (keys.alt && !this.modifierState.alt) return false;
-        if (keys.shift && !this.modifierState.shift) return false;
-        // At least one modifier must be required
+    private hasAnyModifierSelected(keys: ModifierKeyConfig): boolean {
         return keys.meta || keys.ctrl || keys.alt || keys.shift;
-    }
-
-    private handleModifierKeyDown(doc: Document) {
-        // If already showing a preview, do nothing
-        if (this.activePreview) return;
-
-        // Check if ALL required modifiers are now pressed
-        if (!this.areAllModifiersPressed()) return;
-
-        // Skip if mouse hasn't moved recently — user is likely typing/editing
-        if (Date.now() - this.lastMovementTime > 1500) return;
-
-        // Find element under cursor
-        const elementUnderCursor = doc.elementFromPoint(this.lastMouseX, this.lastMouseY);
-        if (!elementUnderCursor) return;
-
-        const linkInfo = this.findLinkElement(elementUnderCursor, null, { x: this.lastMouseX, y: this.lastMouseY });
-        if (linkInfo) {
-            // Clear any existing timeout and show preview after delay
-            if (this.hoverTimeout) {
-                window.clearTimeout(this.hoverTimeout);
-                this.pendingPreview = undefined;
-            }
-            this.showLoadingIndicator(linkInfo.hoverElement.ownerDocument);
-            this.pendingPreview = {
-                hoverElement: linkInfo.hoverElement,
-                sourceKey: linkInfo.sourceKey,
-            };
-            this.hoverTimeout = window.setTimeout(() => {
-                this.tryShowPreview(linkInfo.element, linkInfo.url, linkInfo.hoverElement, linkInfo.sourceKey);
-            }, this.settings.hoverDelay);
-        }
-    }
-
-    private handleModifierKeyUp() {
-        if (this.settings.requireModifierKey && !this.areAllModifiersPressed()) {
-            // Always cancel pending preview when modifiers released
-            if (this.hoverTimeout) {
-                window.clearTimeout(this.hoverTimeout);
-                this.hoverTimeout = undefined;
-                this.pendingPreview = undefined;
-            }
-            if (this.stillnessCheckTimeout) {
-                window.clearTimeout(this.stillnessCheckTimeout);
-                this.stillnessCheckTimeout = undefined;
-                this.pendingPreview = undefined;
-            }
-            this.removeLoadingIndicator();
-
-            // Only close visible preview if setting is enabled
-            if (this.settings.closeOnModifierRelease && !this.settings.stickyPopup) {
-                this.cleanupActivePreview();
-            }
-        }
     }
 
     async loadSettings() {
@@ -569,16 +2021,44 @@ export default class LinkPreviewPlugin extends Plugin {
             // Fresh install, use platform default
             modifierKeys = platformDefaultKeys;
         }
+        if (!this.hasAnyModifierSelected(modifierKeys)) {
+            modifierKeys = platformDefaultKeys;
+        }
 
         this.settings = {
             ...DEFAULT_SETTINGS,
             ...loaded,
+            domainZoomLevels: { ...loaded?.domainZoomLevels },
             modifierKeys,
         };
 
         // Clean up legacy field if present
         if ('modifierKey' in this.settings) {
             delete (this.settings as LinkPreviewSettings & LegacyLinkPreviewSettings).modifierKey;
+            await this.saveSettings();
+        }
+
+        const obsoleteSettingsFields = [
+            'cachedPreviewDelay',
+            'closeOnModifierRelease',
+            'hoverDelay',
+            'hideGitHubSignInButton',
+            'previewCacheEnabled',
+            'previewCacheTtlDays',
+            'previewImageCacheEnabled',
+            'previewImageCacheTtlDays',
+            'requireModifierKey',
+            'mouseStillnessDelay',
+        ];
+        const rawSettings = this.settings as LinkPreviewSettings & Record<string, unknown>;
+        let removedObsoleteField = false;
+        for (const field of obsoleteSettingsFields) {
+            if (field in rawSettings) {
+                delete rawSettings[field];
+                removedObsoleteField = true;
+            }
+        }
+        if (removedObsoleteField) {
             await this.saveSettings();
         }
     }
@@ -589,29 +2069,57 @@ export default class LinkPreviewPlugin extends Plugin {
 
     onunload() {
         this.cleanupActivePreview();
+        for (const doc of this.inlinePreviewControls.keys()) {
+            this.removeInlinePreviewControls(doc);
+        }
+        for (const doc of this.githubHoverCards.keys()) {
+            this.removeGitHubHoverCard(doc);
+        }
+        for (const doc of this.githubPullRequestBadgeObservers.keys()) {
+            this.unregisterGitHubPullRequestBadges(doc);
+        }
+    }
+
+    private loadPreviewIframe(iframe: HTMLIFrameElement, url: string) {
+        iframe.setAttribute('src', url);
+    }
+
+    private async removeLegacyPreviewCache() {
+        await this.removeLegacyPreviewCacheFile(this.getLegacyPreviewCachePath());
+        try {
+            const imageCacheDir = this.getLegacyPreviewImageCacheDir();
+            if (await this.app.vault.adapter.exists(imageCacheDir)) {
+                await this.app.vault.adapter.rmdir(imageCacheDir, true);
+            }
+        } catch {
+            // Legacy cache cleanup is best-effort.
+        }
+    }
+
+    private async removeLegacyPreviewCacheFile(path: string) {
+        try {
+            if (await this.app.vault.adapter.exists(path)) {
+                await this.app.vault.adapter.remove(path);
+            }
+        } catch {
+            // Legacy cache cleanup is best-effort.
+        }
+    }
+
+    private getLegacyPreviewCachePath(): string {
+        const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+        return normalizePath(`${pluginDir}/preview-cache.json`);
+    }
+
+    private getLegacyPreviewImageCacheDir(): string {
+        const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+        return normalizePath(`${pluginDir}/preview-cache-images`);
     }
 
     private removeOrphanedPreviews() {
         for (const doc of this.handledDocuments) {
             doc.querySelectorAll('.hover-popup').forEach(el => el.remove());
         }
-    }
-
-    private showLoadingIndicator(doc: Document) {
-        this.removeLoadingIndicator();
-        const el = doc.createElement('div');
-        el.addClass('preview-loading-cursor');
-        el.setCssStyles({
-            left: `${this.lastMouseX + 12}px`,
-            top: `${this.lastMouseY + 12}px`,
-        });
-        doc.body.appendChild(el);
-        this.loadingIndicator = el;
-    }
-
-    private removeLoadingIndicator() {
-        this.loadingIndicator?.remove();
-        this.loadingIndicator = undefined;
     }
 
     private createPreviewElement(rect: DOMRect, doc: Document): HTMLElement {
@@ -632,12 +2140,148 @@ export default class LinkPreviewPlugin extends Plugin {
             width: `${bounds.width}px`,
             height: `${bounds.height}px`,
         });
+        this.setPreviewSizeData(el, bounds.width, bounds.height);
         
         return el;
     }
 
+    private isGitHubUrl(url: string): boolean {
+        try {
+            return new URL(url).hostname === 'github.com';
+        } catch {
+            return false;
+        }
+    }
+
+    private getGitHubLoginUrl(returnUrl: string): string {
+        try {
+            const githubUrl = new URL(returnUrl);
+            const returnPath = `${githubUrl.pathname}${githubUrl.search}${githubUrl.hash}`;
+            return `https://github.com/login?return_to=${encodeURIComponent(returnPath)}`;
+        } catch {
+            return 'https://github.com/login';
+        }
+    }
+
+    private getGitHubLogoutUrl(returnUrl: string): string {
+        try {
+            const githubUrl = new URL(returnUrl);
+            const returnPath = `${githubUrl.pathname}${githubUrl.search}${githubUrl.hash}`;
+            return `https://github.com/logout?return_to=${encodeURIComponent(returnPath)}`;
+        } catch {
+            return 'https://github.com/logout';
+        }
+    }
+
+    private getRequireFunction(): ((moduleName: string) => unknown) | null {
+        const windowRequire = (window as Window & RequireHost).require;
+        if (typeof windowRequire === 'function') return windowRequire;
+
+        const globalRequire = (globalThis as RequireHost).require;
+        if (typeof globalRequire === 'function') return globalRequire;
+
+        return null;
+    }
+
+    private getElectronCookies(): ElectronCookies | null {
+        if (!Platform.isDesktopApp) return null;
+
+        const requireFn = this.getRequireFunction();
+        if (!requireFn) return null;
+
+        try {
+            const electron = requireFn('electron') as ElectronModule;
+            return electron.session?.defaultSession?.cookies ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    private async getGitHubAuthState(): Promise<GitHubAuthState> {
+        const cookies = this.getElectronCookies();
+        if (!cookies) return 'unknown';
+
+        try {
+            const githubCookies = await cookies.get({ url: 'https://github.com/' });
+            const hasAuthCookie = githubCookies.some((cookie) =>
+                cookie.value.length > 0 &&
+                (
+                    cookie.name === 'dotcom_user' ||
+                    cookie.name === 'user_session' ||
+                    cookie.name === '__Host-user_session_same_site' ||
+                    (cookie.name === 'logged_in' && cookie.value === 'yes')
+                )
+            );
+
+            return hasAuthCookie ? 'signed-in' : 'signed-out';
+        } catch {
+            return 'unknown';
+        }
+    }
+
+    private getPreviewDomain(url: string): string | null {
+        try {
+            return new URL(url).hostname.toLowerCase();
+        } catch {
+            return null;
+        }
+    }
+
+    private getDomainZoomPercent(url: string): number {
+        const domain = this.getPreviewDomain(url);
+        const savedZoom = domain ? this.settings.domainZoomLevels[domain] : undefined;
+        return this.clampZoomPercent(savedZoom ?? this.getDefaultDomainZoomPercent(url));
+    }
+
+    private getDefaultDomainZoomPercent(_url: string): number {
+        return 100;
+    }
+
+    private clampZoomPercent(value: number): number {
+        if (!Number.isFinite(value)) return 100;
+        return Math.min(200, Math.max(50, Math.round(value)));
+    }
+
+    private async setDomainZoomPercent(url: string, value: number) {
+        const domain = this.getPreviewDomain(url);
+        if (!domain) return;
+
+        this.settings.domainZoomLevels[domain] = this.clampZoomPercent(value);
+        await this.saveSettings();
+    }
+
+    private async resetDomainZoomPercent(url: string) {
+        const domain = this.getPreviewDomain(url);
+        if (!domain) return;
+
+        delete this.settings.domainZoomLevels[domain];
+        await this.saveSettings();
+    }
+
+    private applyPreviewViewportProps(previewEl: HTMLElement, url = previewEl.getAttribute('data-preview-url') ?? '') {
+        const previewRect = previewEl.getBoundingClientRect();
+        const wrapper = previewEl.querySelector('.preview-iframe-wrapper');
+        const viewportRect = wrapper instanceof HTMLElement ? wrapper.getBoundingClientRect() : previewRect;
+        const width = Math.max(1, viewportRect.width);
+        const height = Math.max(1, viewportRect.height);
+        const zoomScale = this.getDomainZoomPercent(url) / 100;
+        const frameWidth = Math.max(1, width / zoomScale);
+        const scale = width / frameWidth;
+
+        previewEl.setCssProps({
+            '--preview-frame-height': `${Math.ceil(height / scale)}px`,
+            '--preview-frame-scale': String(scale),
+            '--preview-frame-width': `${frameWidth}px`,
+        });
+    }
+
     private shouldShowToolbar(): boolean {
-        return this.settings.showOpenInBrowser || this.settings.showCloseButton || this.settings.allowResize;
+        return true;
+    }
+
+    private setToolbarTooltip(button: HTMLElement, label: string) {
+        button.setAttr('aria-label', label);
+        setTooltip(button, label, TOOLBAR_TOOLTIP_OPTIONS);
     }
 
     private createButtons(container: HTMLElement, url: string) {
@@ -645,10 +2289,20 @@ export default class LinkPreviewPlugin extends Plugin {
         const win = container.ownerDocument.defaultView ?? window;
 
         if (this.settings.allowResize) {
+            this.createSizeControls(buttons, container);
+        }
+
+        this.createZoomControls(buttons, container, url);
+
+        if (this.isGitHubUrl(url)) {
+            this.createGitHubAuthButton(buttons, container, url);
+        }
+
+        if (this.settings.allowResize) {
             let restoreBounds: { left: number, top: number, width: number, height: number } | null = null;
             const resizeBtn = buttons.createEl('button', { cls: 'clickable-icon' });
             setIcon(resizeBtn, 'maximize-2');
-            setTooltip(resizeBtn, 'Expand preview');
+            this.setToolbarTooltip(resizeBtn, 'Expand preview');
             resizeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
 
@@ -656,7 +2310,7 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.applyPreviewBounds(container, restoreBounds);
                     restoreBounds = null;
                     setIcon(resizeBtn, 'maximize-2');
-                    setTooltip(resizeBtn, 'Expand preview');
+                    this.setToolbarTooltip(resizeBtn, 'Expand preview');
                     return;
                 }
 
@@ -669,14 +2323,14 @@ export default class LinkPreviewPlugin extends Plugin {
                 };
                 this.applyPreviewBounds(container, this.calculateExpandedPreviewBounds(container.ownerDocument));
                 setIcon(resizeBtn, 'minimize-2');
-                setTooltip(resizeBtn, 'Restore preview size');
+                this.setToolbarTooltip(resizeBtn, 'Restore preview size');
             });
         }
 
         if (this.settings.showOpenInBrowser) {
             const openBtn = buttons.createEl('button', { cls: 'clickable-icon' });
             setIcon(openBtn, 'external-link');
-            setTooltip(openBtn, 'Open in external browser');
+            this.setToolbarTooltip(openBtn, 'Open in external browser');
             openBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 win.open(url);
@@ -686,12 +2340,199 @@ export default class LinkPreviewPlugin extends Plugin {
         if (this.settings.showCloseButton) {
             const closeBtn = buttons.createEl('button', { cls: 'clickable-icon' });
             setIcon(closeBtn, 'x');
-            setTooltip(closeBtn, 'Close preview');
+            this.setToolbarTooltip(closeBtn, 'Close preview');
             closeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.cleanupActivePreview();
             });
         }
+    }
+
+    private createGitHubAuthButton(buttons: HTMLElement, container: HTMLElement, url: string) {
+        const authBtn = buttons.createEl('button', { cls: 'clickable-icon preview-github-auth-button' });
+        this.configureGitHubAuthButton(authBtn, 'unknown');
+        void this.updateGitHubAuthButton(authBtn);
+
+        authBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const iframe = container.querySelector('.preview-iframe-wrapper iframe');
+            if (!(iframe instanceof HTMLIFrameElement)) return;
+
+            const authState = authBtn.getAttribute('data-github-auth-state');
+            iframe.removeClass('is-loaded');
+            iframe.setAttribute(
+                'src',
+                authState === 'signed-in' ? this.getGitHubLogoutUrl(url) : this.getGitHubLoginUrl(url)
+            );
+        });
+    }
+
+    private configureGitHubAuthButton(button: HTMLElement, state: GitHubAuthState) {
+        const isSignedIn = state === 'signed-in';
+        button.setAttr('data-github-auth-state', isSignedIn ? 'signed-in' : 'signed-out');
+        setIcon(button, isSignedIn ? 'log-out' : 'log-in');
+        this.setToolbarTooltip(button, isSignedIn ? 'Sign out of GitHub' : 'Sign in to GitHub');
+    }
+
+    private async updateGitHubAuthControls(previewEl: HTMLElement) {
+        const authButton = previewEl.querySelector('.preview-github-auth-button');
+        if (authButton instanceof HTMLElement) {
+            await this.updateGitHubAuthButton(authButton);
+        }
+    }
+
+    private async updateGitHubAuthButton(button: HTMLElement) {
+        const authState = await this.getGitHubAuthState();
+        if (!button.isConnected) return;
+
+        this.configureGitHubAuthButton(button, authState);
+    }
+
+    private createSizeControls(buttons: HTMLElement, previewEl: HTMLElement) {
+        const sizeControls = buttons.createDiv('preview-size-controls');
+        const sizeInput = sizeControls.createEl('input', { cls: 'preview-size-input' });
+        sizeInput.setAttr('type', 'text');
+        sizeInput.setAttr('aria-label', 'Preview window size');
+        sizeInput.setAttr('spellcheck', 'false');
+
+        const pinBtn = sizeControls.createEl('button', { cls: 'clickable-icon preview-size-pin-button' });
+
+        const updateSizeInput = () => {
+            sizeInput.value = this.formatPreviewSize(previewEl);
+        };
+        const updatePinButton = () => {
+            const isPinned = this.settings.persistResize;
+            setIcon(pinBtn, isPinned ? 'pin' : 'pin-off');
+            this.setToolbarTooltip(pinBtn, isPinned ? 'Forget preview size' : 'Remember preview size');
+            if (isPinned) {
+                pinBtn.addClass('is-active');
+            } else {
+                pinBtn.removeClass('is-active');
+            }
+        };
+        const applyInputSize = () => {
+            const size = this.parsePreviewSize(sizeInput.value);
+            if (!size) {
+                updateSizeInput();
+                return;
+            }
+
+            this.resizePreviewTo(previewEl, size.width, size.height);
+            this.updatePreviewSizeControls(previewEl, true);
+            if (this.settings.persistResize) {
+                void this.persistPreviewSize(previewEl);
+            }
+        };
+
+        updateSizeInput();
+        updatePinButton();
+
+        sizeInput.addEventListener('click', (event) => event.stopPropagation());
+        sizeInput.addEventListener('change', applyInputSize);
+        sizeInput.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') {
+                applyInputSize();
+                sizeInput.blur();
+            }
+            if (event.key === 'Escape') {
+                updateSizeInput();
+                sizeInput.blur();
+            }
+        });
+
+        pinBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void (async () => {
+                if (this.settings.persistResize) {
+                    this.settings.persistResize = false;
+                    this.settings.persistedWidth = undefined;
+                    this.settings.persistedHeight = undefined;
+                    await this.saveSettings();
+                    updatePinButton();
+                    return;
+                }
+
+                this.settings.persistResize = true;
+                await this.persistPreviewSize(previewEl);
+                updatePinButton();
+            })();
+        });
+    }
+
+    private createZoomControls(buttons: HTMLElement, previewEl: HTMLElement, url: string) {
+        const zoomControls = buttons.createDiv('preview-zoom-controls');
+        const zoomInputWrap = zoomControls.createDiv('preview-zoom-input-wrap');
+        const zoomInput = zoomInputWrap.createEl('input', { cls: 'preview-zoom-input' });
+        const zoomSuffix = zoomInputWrap.createSpan({ cls: 'preview-zoom-suffix', text: '%' });
+        zoomSuffix.setAttr('aria-hidden', 'true');
+        zoomInput.setAttr('type', 'number');
+        zoomInput.setAttr('min', '50');
+        zoomInput.setAttr('max', '200');
+        zoomInput.setAttr('step', '10');
+        zoomInput.setAttr('aria-label', 'Preview zoom percentage');
+
+        const updateZoomInput = () => {
+            zoomInput.value = String(this.getDomainZoomPercent(url));
+        };
+        const applyZoom = async (value: number) => {
+            await this.setDomainZoomPercent(url, value);
+            updateZoomInput();
+            this.applyPreviewViewportProps(previewEl, url);
+        };
+        const applyInputZoom = () => {
+            const value = Number(zoomInput.value);
+            if (!isNaN(value)) {
+                void applyZoom(value);
+            } else {
+                updateZoomInput();
+            }
+        };
+
+        updateZoomInput();
+        zoomInputWrap.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (event.target !== zoomInput) {
+                zoomInput.focus();
+            }
+        });
+        zoomInput.addEventListener('click', (event) => event.stopPropagation());
+        zoomInput.addEventListener('change', applyInputZoom);
+        zoomInput.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') {
+                applyInputZoom();
+                zoomInput.blur();
+            }
+        });
+
+        const zoomOutBtn = zoomControls.createEl('button', { cls: 'clickable-icon preview-zoom-button' });
+        setIcon(zoomOutBtn, 'minus');
+        this.setToolbarTooltip(zoomOutBtn, 'Zoom out');
+        zoomOutBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void applyZoom(this.getDomainZoomPercent(url) - 10);
+        });
+
+        const zoomInBtn = zoomControls.createEl('button', { cls: 'clickable-icon preview-zoom-button' });
+        setIcon(zoomInBtn, 'plus');
+        this.setToolbarTooltip(zoomInBtn, 'Zoom in');
+        zoomInBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void applyZoom(this.getDomainZoomPercent(url) + 10);
+        });
+
+        const resetZoomBtn = zoomControls.createEl('button', { cls: 'clickable-icon preview-zoom-button' });
+        setIcon(resetZoomBtn, 'rotate-ccw');
+        this.setToolbarTooltip(resetZoomBtn, 'Reset zoom');
+        resetZoomBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void (async () => {
+                await this.resetDomainZoomPercent(url);
+                updateZoomInput();
+                this.applyPreviewViewportProps(previewEl, url);
+            })();
+        });
     }
 
     private calculateExpandedPreviewBounds(doc: Document): { left: number, top: number, width: number, height: number } {
@@ -713,6 +2554,80 @@ export default class LinkPreviewPlugin extends Plugin {
             width: `${bounds.width}px`,
             height: `${bounds.height}px`,
         });
+        this.setPreviewSizeData(previewEl, bounds.width, bounds.height);
+        this.updatePreviewSizeControls(previewEl);
+        this.applyPreviewViewportProps(previewEl);
+    }
+
+    private setPreviewSizeData(previewEl: HTMLElement, width: number, height: number) {
+        previewEl.setAttr('data-preview-width', String(Math.round(width)));
+        previewEl.setAttr('data-preview-height', String(Math.round(height)));
+    }
+
+    private getPreviewSize(previewEl: HTMLElement): { width: number, height: number } {
+        const rect = previewEl.getBoundingClientRect();
+        const dataWidth = Number(previewEl.getAttribute('data-preview-width'));
+        const dataHeight = Number(previewEl.getAttribute('data-preview-height'));
+        const width = rect.width > 0 ? rect.width : dataWidth;
+        const height = rect.height > 0 ? rect.height : dataHeight;
+
+        return {
+            width: Math.round(Number.isFinite(width) && width > 0 ? width : this.settings.maxPreviewWidth),
+            height: Math.round(Number.isFinite(height) && height > 0 ? height : this.settings.maxPreviewHeight),
+        };
+    }
+
+    private formatPreviewSize(previewEl: HTMLElement): string {
+        const { width, height } = this.getPreviewSize(previewEl);
+        return `${width}x${height}`;
+    }
+
+    private parsePreviewSize(value: string): { width: number, height: number } | null {
+        const match = value.match(/^\s*(\d+)\s*[x\u00d7,]\s*(\d+)\s*$/i);
+        if (!match) return null;
+
+        const width = Number(match[1]);
+        const height = Number(match[2]);
+        if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+
+        return { width, height };
+    }
+
+    private updatePreviewSizeControls(previewEl: HTMLElement, force = false) {
+        const input = previewEl.querySelector('.preview-size-input');
+        if (!(input instanceof HTMLInputElement)) return;
+        if (!force && input.ownerDocument.activeElement === input) return;
+
+        input.value = this.formatPreviewSize(previewEl);
+    }
+
+    private resizePreviewTo(previewEl: HTMLElement, width: number, height: number) {
+        const doc = previewEl.ownerDocument;
+        const win = doc.defaultView ?? window;
+        const margin = 5;
+        const maxWidth = Math.max(MIN_PREVIEW_WIDTH, win.innerWidth - margin * 2);
+        const maxHeight = Math.max(MIN_PREVIEW_HEIGHT, win.innerHeight - margin * 2);
+        const targetWidth = Math.min(maxWidth, Math.max(MIN_PREVIEW_WIDTH, Math.round(width)));
+        const targetHeight = Math.min(maxHeight, Math.max(MIN_PREVIEW_HEIGHT, Math.round(height)));
+        const rect = previewEl.getBoundingClientRect();
+        const currentLeft = rect.width > 0 ? rect.left : margin;
+        const currentTop = rect.height > 0 ? rect.top : margin;
+        const left = Math.max(margin, Math.min(currentLeft, win.innerWidth - targetWidth - margin));
+        const top = Math.max(margin, Math.min(currentTop, win.innerHeight - targetHeight - margin));
+
+        this.applyPreviewBounds(previewEl, {
+            left,
+            top,
+            width: targetWidth,
+            height: targetHeight,
+        });
+    }
+
+    private async persistPreviewSize(previewEl: HTMLElement) {
+        const { width, height } = this.getPreviewSize(previewEl);
+        this.settings.persistedWidth = width;
+        this.settings.persistedHeight = height;
+        await this.saveSettings();
     }
 
     private createResizeHandles(previewEl: HTMLElement) {
@@ -785,6 +2700,9 @@ export default class LinkPreviewPlugin extends Plugin {
                 width: `${newWidth}px`,
                 height: `${newHeight}px`,
             });
+            this.setPreviewSizeData(previewEl, newWidth, newHeight);
+            this.updatePreviewSizeControls(previewEl);
+            this.applyPreviewViewportProps(previewEl);
 
             indicator.textContent = `${Math.round(newWidth)}\u00d7${Math.round(newHeight)}`;
             indicator.setCssStyles({
@@ -801,10 +2719,7 @@ export default class LinkPreviewPlugin extends Plugin {
             this.activeResizeCleanup = undefined;
 
             if (this.settings.persistResize) {
-                const finalRect = previewEl.getBoundingClientRect();
-                this.settings.persistedWidth = Math.round(finalRect.width);
-                this.settings.persistedHeight = Math.round(finalRect.height);
-                void this.saveSettings();
+                void this.persistPreviewSize(previewEl);
             }
         };
 
@@ -906,28 +2821,28 @@ export default class LinkPreviewPlugin extends Plugin {
         const editorView = EditorView.findFromDOM(target) ?? EditorView.findFromDOM(editorElement);
         if (!editorView) return null;
 
+        const linkTarget = this.getEditorLinkTargetElement(target);
+        if (!linkTarget) return null;
+
         const content = editorView.state.doc.toString();
-        const hoverElement = this.getEditorHoverElement(target, editorElement);
         const pointLink = point ? this.getMarkdownLinkAtPoint(editorView, content, point) : null;
 
         if (pointLink) {
             return {
-                element: target,
-                hoverElement,
+                editorView,
+                element: linkTarget,
+                hoverElement: linkTarget,
+                markdownLink: pointLink,
                 sourceKey: this.getMarkdownLinkSourceKey(pointLink),
                 url: pointLink.url,
             };
         }
 
-        if (!this.isEditorLinkLikeElement(target)) {
-            return null;
-        }
-
-        const textLink = this.getMarkdownLinkByDisplayText(content, target);
+        const textLink = this.getMarkdownLinkByDisplayText(content, linkTarget);
         if (textLink) {
             return {
-                element: target,
-                hoverElement,
+                element: linkTarget,
+                hoverElement: linkTarget,
                 sourceKey: this.getMarkdownLinkSourceKey(textLink),
                 url: textLink.url,
             };
@@ -936,16 +2851,9 @@ export default class LinkPreviewPlugin extends Plugin {
         return null;
     }
 
-    private getEditorHoverElement(target: HTMLElement, editorElement: HTMLElement): HTMLElement {
-        const lineElement = target.closest('.cm-line');
-        if (lineElement instanceof HTMLElement) {
-            return lineElement;
-        }
-        return editorElement;
-    }
-
-    private isEditorLinkLikeElement(element: HTMLElement): boolean {
-        return Boolean(element.closest('.cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]'));
+    private getEditorLinkTargetElement(element: HTMLElement): HTMLElement | null {
+        const linkElement = element.closest(EDITOR_LINK_SELECTOR);
+        return linkElement instanceof HTMLElement ? linkElement : null;
     }
 
     private getMarkdownLinkAtPoint(editorView: EditorView, content: string, point: ScreenPoint): ParsedMarkdownLink | null {
@@ -1057,6 +2965,34 @@ export default class LinkPreviewPlugin extends Plugin {
         return links;
     }
 
+    private parseEditorLinks(content: string): ParsedMarkdownLink[] {
+        const markdownLinks = this.parseMarkdownLinks(content);
+        return [
+            ...markdownLinks,
+            ...this.parseBareMarkdownUrls(content, markdownLinks),
+        ];
+    }
+
+    private parseBareMarkdownUrls(content: string, excludedRanges: TextRange[] = []): ParsedMarkdownLink[] {
+        const links: ParsedMarkdownLink[] = [];
+        const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
+        let match: RegExpExecArray | null;
+
+        while ((match = urlRegex.exec(content)) !== null) {
+            const start = match.index;
+            const text = match[0];
+            const end = start + text.length;
+            if (excludedRanges.some((range) => start >= range.start && end <= range.end)) continue;
+
+            const url = this.normalizeUrl(text);
+            if (!url) continue;
+
+            links.push(this.createBareMarkdownUrlLink(start, end, text, url));
+        }
+
+        return links;
+    }
+
     private findClosingBracket(content: string, start: number): number {
         let depth = 0;
 
@@ -1123,44 +3059,31 @@ export default class LinkPreviewPlugin extends Plugin {
         const url = this.normalizeUrl(displayText);
         if (!url) return null;
 
-        return {
-            destinationEnd: displayText.length,
-            destinationStart: 0,
-            end: displayText.length,
-            start: 0,
-            text: displayText,
-            textEnd: displayText.length,
-            textStart: 0,
-            url,
-        };
+        return this.createBareMarkdownUrlLink(0, displayText.length, displayText, url);
     }
 
     private getBareMarkdownUrlAtOffset(content: string, offset: number): ParsedMarkdownLink | null {
-        const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
-        let match;
-
-        while ((match = urlRegex.exec(content)) !== null) {
-            const start = match.index;
-            const text = match[0];
-            const end = start + text.length;
+        for (const link of this.parseBareMarkdownUrls(content)) {
+            const { end, start } = link;
             if (offset < start || offset > end) continue;
 
-            const url = this.normalizeUrl(text);
-            if (!url) return null;
-
-            return {
-                destinationEnd: end,
-                destinationStart: start,
-                end,
-                start,
-                text,
-                textEnd: end,
-                textStart: start,
-                url,
-            };
+            return link;
         }
 
         return null;
+    }
+
+    private createBareMarkdownUrlLink(start: number, end: number, text: string, url: string): ParsedMarkdownLink {
+        return {
+            destinationEnd: end,
+            destinationStart: start,
+            end,
+            start,
+            text,
+            textEnd: end,
+            textStart: start,
+            url,
+        };
     }
 
     private getMarkdownLinkSourceKey(link: ParsedMarkdownLink): string {
@@ -1173,17 +3096,6 @@ export default class LinkPreviewPlugin extends Plugin {
 
         if (this.activePreview.sourceKey || linkInfo.sourceKey) {
             return this.activePreview.sourceKey === linkInfo.sourceKey;
-        }
-
-        return true;
-    }
-
-    private isPendingPreviewForLink(linkInfo: LinkInfo): boolean {
-        if (!this.pendingPreview) return false;
-        if (this.pendingPreview.hoverElement !== linkInfo.hoverElement) return false;
-
-        if (this.pendingPreview.sourceKey || linkInfo.sourceKey) {
-            return this.pendingPreview.sourceKey === linkInfo.sourceKey;
         }
 
         return true;
@@ -1225,6 +3137,139 @@ export default class LinkPreviewPlugin extends Plugin {
         return text ? this.normalizeUrl(text) : null;
     }
 
+    private async fetchPageTitle(url: string): Promise<string | null> {
+        const html = await this.fetchPageHtml(url);
+        const title = this.extractPageTitle(html, url);
+        if (!title || this.isUnusablePageTitle(title, url)) return null;
+
+        return title;
+    }
+
+    private async fetchPageHtml(url: string): Promise<string> {
+        const headers = await this.getTitleRequestHeaders(url);
+
+        try {
+            const response = await requestUrl({ url, headers, throw: false });
+            return response.text;
+        } catch {
+            if (!headers.Cookie) throw new Error('Title request failed');
+
+            const response = await requestUrl({ url, headers: this.getTitleRequestBaseHeaders(), throw: false });
+            return response.text;
+        }
+    }
+
+    private async getTitleRequestHeaders(url: string): Promise<Record<string, string>> {
+        const headers = this.getTitleRequestBaseHeaders();
+        const cookieHeader = await this.getCookieHeaderForUrl(url);
+        if (cookieHeader) {
+            headers.Cookie = cookieHeader;
+        }
+        return headers;
+    }
+
+    private getTitleRequestBaseHeaders(): Record<string, string> {
+        return {
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        };
+    }
+
+    private async getCookieHeaderForUrl(url: string): Promise<string | null> {
+        const cookies = this.getElectronCookies();
+        if (!cookies) return null;
+
+        try {
+            const parsedUrl = new URL(url);
+            if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+                return null;
+            }
+
+            const matchingCookies = await cookies.get({ url: parsedUrl.href });
+            const cookiePairs = matchingCookies
+                .filter((cookie) => cookie.name.length > 0 && cookie.value.length > 0)
+                .map((cookie) => `${cookie.name}=${cookie.value}`);
+
+            return cookiePairs.length > 0 ? cookiePairs.join('; ') : null;
+        } catch {
+            return null;
+        }
+    }
+
+    private extractPageTitle(html: string, url: string): string | null {
+        const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
+        const githubTitle = this.extractGitHubPageTitle(parsedDocument, url);
+        if (githubTitle) return githubTitle;
+
+        return this.getFirstMetaContent(parsedDocument, [
+            'meta[property="og:title"]',
+            'meta[name="twitter:title"]',
+            'meta[name="title"]',
+        ]) ?? this.cleanPageTitle(parsedDocument.querySelector('title')?.textContent);
+    }
+
+    private extractGitHubPageTitle(doc: Document, url: string): string | null {
+        if (!this.isGitHubUrl(url)) return null;
+
+        const issueTitleElement = doc.querySelector('.js-issue-title, [data-testid="issue-title"], bdi.js-issue-title');
+        const issueTitle = this.cleanPageTitle(issueTitleElement?.textContent);
+        if (issueTitle) return issueTitle;
+
+        const rawTitle = this.getFirstMetaContent(doc, ['meta[property="og:title"]']) ??
+            doc.querySelector('title')?.textContent;
+        return this.cleanGitHubTitle(rawTitle);
+    }
+
+    private cleanGitHubTitle(title: string | null | undefined): string | null {
+        const cleanedTitle = this.cleanPageTitle(title);
+        if (!cleanedTitle) return null;
+
+        const withoutGitHubSuffix = cleanedTitle.replace(/\s+·\s+GitHub$/i, '');
+        const withoutAuthor = withoutGitHubSuffix.replace(
+            /\s+by\s+[^·]+(?=\s+·\s+(?:Pull Request|Issue|Discussion)\s+#\d+)/i,
+            ''
+        );
+        const titleMatch = withoutAuthor.match(
+            /^(.*?)\s+·\s+(?:Pull Request|Issue|Discussion)\s+#\d+\s+·\s+.+$/i
+        );
+
+        return this.cleanPageTitle(titleMatch?.[1] ?? withoutAuthor);
+    }
+
+    private getFirstMetaContent(doc: Document, selectors: string[]): string | null {
+        for (const selector of selectors) {
+            const meta = doc.querySelector(selector);
+            if (!(meta instanceof HTMLMetaElement)) continue;
+
+            const title = this.cleanPageTitle(meta.content);
+            if (title) return title;
+        }
+
+        return null;
+    }
+
+    private cleanPageTitle(title: string | null | undefined): string | null {
+        const cleanedTitle = title?.replace(/\s+/g, ' ').trim();
+        return cleanedTitle ? cleanedTitle : null;
+    }
+
+    private isUnusablePageTitle(title: string, url: string): boolean {
+        if (!this.isGitHubUrl(url)) return false;
+
+        return /^(sign in to github|join github|github)$/i.test(title);
+    }
+
+    private escapeMarkdownLinkText(text: string): string {
+        return text
+            .replace(/\\/g, '\\\\')
+            .replace(/\[/g, '\\[')
+            .replace(/\]/g, '\\]');
+    }
+
+    private formatMarkdownDestination(url: string): string {
+        const safeUrl = url.replace(/</g, '%3C').replace(/>/g, '%3E');
+        return /[\s()<>]/.test(safeUrl) ? `<${safeUrl}>` : safeUrl;
+    }
+
     private normalizeUrl(candidate: string): string | null {
         const trimmed = candidate.trim();
         if (!/^https?:\/\//i.test(trimmed)) {
@@ -1244,6 +3289,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
     constructor(app: App, plugin: LinkPreviewPlugin) {
         super(app, plugin);
+        this.icon = 'eye';
         this.plugin = plugin;
     }
 
@@ -1252,21 +3298,6 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         containerEl.empty();
 
-        const isModifierKeyEnabled = this.plugin.settings.requireModifierKey;
-
-        new Setting(containerEl)
-            .setName('Require modifier key')
-            .setDesc('Only show preview when holding a modifier key while hovering')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.requireModifierKey)
-                .onChange(async (value) => {
-                    this.plugin.settings.requireModifierKey = value;
-                    await this.plugin.saveSettings();
-                    // Refresh display to update disabled/opacity states
-                    this.display();
-                }));
-
-        // Modifier key toggles
         const modifierKeyNames: { key: keyof ModifierKeyConfig; label: string }[] = [
             { key: 'meta', label: Platform.isMacOS ? 'Command (⌘)' : 'Meta/Win' },
             { key: 'ctrl', label: Platform.isMacOS ? 'Control (⌃)' : 'Ctrl' },
@@ -1275,12 +3306,8 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         ];
 
         const modifierGroup = new SettingGroup(containerEl)
-            .setHeading('Modifier keys')
+            .setHeading('Preview click modifiers')
             .addClass('settings-group-no-margin');
-
-        if (!isModifierKeyEnabled) {
-            modifierGroup.addClass('setting-disabled');
-        }
 
         for (const { key, label } of modifierKeyNames) {
             modifierGroup.addSetting(setting => {
@@ -1292,16 +3319,13 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                             .setValue(this.plugin.settings.modifierKeys[key])
                             .onChange(async (value) => {
                                 this.plugin.settings.modifierKeys[key] = value;
-                                // Ensure at least one modifier is selected when requireModifierKey is enabled
-                                if (this.plugin.settings.requireModifierKey && !this.hasAnyModifierSelected()) {
-                                    // Reset to platform default
+                                if (!this.hasAnyModifierSelected()) {
                                     const defaultKey = Platform.isMacOS ? 'meta' : 'ctrl';
                                     this.plugin.settings.modifierKeys[defaultKey] = true;
                                 }
                                 await this.plugin.saveSettings();
                                 this.display();
                             });
-                        toggle.setDisabled(!isModifierKeyEnabled);
                     });
             });
         }
@@ -1309,24 +3333,6 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         const behaviorGroup = new SettingGroup(containerEl)
             .setHeading('Behavior')
             .addClass('settings-group-no-margin');
-
-        behaviorGroup.addSetting(setting => {
-            setting
-                .setName('Close on key release')
-                .setDesc('Close preview when modifier key is released')
-                .addToggle(toggle => {
-                    toggle
-                        .setValue(this.plugin.settings.closeOnModifierRelease)
-                        .onChange(async (value) => {
-                            this.plugin.settings.closeOnModifierRelease = value;
-                            await this.plugin.saveSettings();
-                        });
-                    toggle.setDisabled(!isModifierKeyEnabled);
-                });
-            if (!isModifierKeyEnabled) {
-                setting.settingEl.addClass('setting-disabled');
-            }
-        });
 
         behaviorGroup.addSetting(setting => {
             setting
@@ -1364,39 +3370,16 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     }));
         });
 
-        new SettingGroup(containerEl)
-            .setHeading('Mouse settings')
-            .addClass('settings-group-no-margin')
-            .addSetting(setting => {
-                setting
-                    .setName('Hover delay')
-                    .setDesc('Delay before showing preview (in ms)')
-                    .addText(text => text
-                        .setPlaceholder('500')
-                        .setValue(String(this.plugin.settings.hoverDelay))
-                        .onChange(async (value) => {
-                            const numValue = Number(value);
-                            if (!isNaN(numValue) && numValue >= 0) {
-                                this.plugin.settings.hoverDelay = numValue;
-                                await this.plugin.saveSettings();
-                            }
-                        }));
-            })
-            .addSetting(setting => {
-                setting
-                    .setName('Mouse stillness delay')
-                    .setDesc('Time in ms the mouse must be stationary before showing preview (0 = disabled)')
-                    .addText(text => text
-                        .setPlaceholder('0')
-                        .setValue(String(this.plugin.settings.mouseStillnessDelay))
-                        .onChange(async (value) => {
-                            const numValue = Number(value);
-                            if (!isNaN(numValue) && numValue >= 0) {
-                                this.plugin.settings.mouseStillnessDelay = numValue;
-                                await this.plugin.saveSettings();
-                            }
-                        }));
-            });
+        behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Show GitHub pull request numbers')
+                .setDesc('Show #123 beside GitHub pull request links')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showGitHubPullRequestIds)
+                    .onChange(async (value) => {
+                        await this.plugin.setShowGitHubPullRequestIds(value);
+                    }));
+        });
 
         new SettingGroup(containerEl)
             .setHeading('Preview size')
@@ -1496,10 +3479,10 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
     private getModifierKeyDescription(key: keyof ModifierKeyConfig): string {
         const descriptions: Record<keyof ModifierKeyConfig, string> = {
-            meta: Platform.isMacOS ? 'Require Command key' : 'Require Meta/Windows key',
-            ctrl: Platform.isMacOS ? 'Require Control key' : 'Require Ctrl key',
-            alt: Platform.isMacOS ? 'Require Option key' : 'Require Alt key',
-            shift: 'Require Shift key',
+            meta: Platform.isMacOS ? 'Hold Command while clicking a link' : 'Hold Meta/Windows while clicking a link',
+            ctrl: Platform.isMacOS ? 'Hold Control while clicking a link' : 'Hold Ctrl while clicking a link',
+            alt: Platform.isMacOS ? 'Hold Option while clicking a link' : 'Hold Alt while clicking a link',
+            shift: 'Hold Shift while clicking a link',
         };
         return descriptions[key];
     }

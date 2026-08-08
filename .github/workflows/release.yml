@@ -26,4 +26,6 @@ jobs:
           gh release create "$tag" \
             --title="Release $tag" \
             --latest \
-            main.js manifest.json styles.css
+            main.js manifest.json styles.css \
+            assets/fonts/FlowCircular-Regular.ttf \
+            assets/fonts/FlowCircular-OFL.txt

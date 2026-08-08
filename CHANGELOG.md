@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.6.0] - 2026-08-08
+
+### Added
+
+- Toolbar zoom controls with hidden per-domain zoom persistence.
+- GitHub auth button in the preview toolbar so GitHub auth can persist across live previews.
+- Bottom-positioned toolbar button tooltips.
+- Inline eye button beside hovered links to open previews directly.
+- Inline GitHub button beside bare GitHub URLs to convert them to Markdown links.
+- Editor context menu action to convert external URLs to Markdown links using the page title.
+- Subtle pull request number badges beside GitHub PR links in Live Preview and reading mode.
+- Setting to toggle GitHub pull request ID badges.
+- Clickable GitHub pull request ID badges that copy the `owner/repo#123` reference to the clipboard.
+- Settings sidebar icon for URL Preview.
+- Toolbar size controls with a pin toggle to remember the current preview dimensions.
+- GitHub hover cards for pull request and issue links on regular link hover.
+
+### Changed
+
+- Preview trigger now uses configured modifier keys plus click instead of modifier-hover.
+- Refined toolbar zoom controls with the zoom-out button next to the input, a reset icon, and a muted percent suffix.
+- Previews now always load as live iframes instead of static snapshots so browser session cookies can apply.
+- GitHub auth button switches between sign-in and sign-out when desktop GitHub session cookies can be detected.
+- GitHub previews now use the actual preview width for zoom and responsive layout instead of a forced desktop viewport.
+- GitHub pull request ID badges now render after Obsidian's external-link icon.
+- GitHub pull request and issue tooltips now use short `owner/repo#123` references.
+
+### Removed
+
+- Hover-trigger settings: require modifier key, close on key release, hover delay, and mouse stillness delay.
+- Static page snapshot cache and image cache support.
+
+### Fixed
+
+- Inline link action buttons no longer overlap Obsidian's external-link icon and remain clickable while moving the pointer toward them.
+- Preview loading spinner now remains visible through iframe load/reveal so blank previews are less jarring.
+- Removed GitHub-specific iframe cropping that could create extra blank space above pull request titles.
+- GitHub pull request badges no longer appear on collapsed heading placeholders in Live Preview.
+- Preview size input now matches the toolbar zoom control styling when unfocused.
+- GitHub pull request badges are hidden when the Markdown link text already includes the same `#123`.
+- Restored GitHub pull request badges on normal Live Preview links after tightening the folded-heading fix.
+- GitHub hover cards now show a Flow Circular skeleton shimmer only while uncached preview details load.
+- Inline link action buttons now stay visible across the hovered visual line and use larger circular icons.
+- Inline link action buttons now keep a full-width cached hover zone for the active link row.
+- Preview popups now use a stronger layered shadow so they stand out from the page behind them.
+- GitHub hover card excerpts now fade in after the loading skeleton is replaced.
+- GitHub hover cards now prefer opening below the cursor and remain open while moving the pointer onto them.
+- GitHub hover cards now measure expanded excerpt height before deciding whether to open above or below.
+- GitHub hover cards no longer render a caret, keeping the shape as a rounded rectangle.
+- GitHub hover cards now stay pinned after opening instead of following every mouse movement.
+- Inline link action buttons now appear when hovering anywhere on the same visual line as a link.
+- Inline link action buttons now render without border or shadow chrome.
+- GitHub hover cards now require the configured preview modifier keys while hovering the link itself.
+- GitHub hover cards now stay open after modifier release while the pointer remains on the link line or card.
+- Bundled the Flow Circular font locally for GitHub hover card skeleton placeholders.
+- GitHub hover card skeletons now inline the Flow Circular font and avoid readable placeholder text.
+- GitHub hover cards no longer apply the legacy loading class that could draw an accent loading bar.
+- GitHub hover cards now let the `owner/repo#123` header copy the reference and no longer add a duplicate reference tooltip to the link text.
+- GitHub hover card reference copy affordance now renders as inline text instead of a native button.
+- GitHub hover card titles now copy the title text when clicked, with the same inline clipboard affordance.
+- GitHub hover cards now keep open on internal clicks, allow text selection, remove the redundant type chip, and show five excerpt lines.
+- GitHub hover card descriptions now keep enough source text to fill the five-line excerpt clamp.
+- GitHub hover cards now clamp excerpts to five visible lines and no longer trigger the old modifier-hover tooltip.
+- Inline link actions and GitHub hover cards no longer appear from a parked cursor during edits, and both are suppressed in source mode.
+- GitHub hover cards now read the PR state from the page header and show it by coloring the title icon instead of rendering a separate pill row.
+
 ## [0.5.0] - 2026-05-05
 
 ### Added
