@@ -46,7 +46,7 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 Hold your configured modifier keys (⌘ on Mac, Ctrl on Windows/Linux by default) and click any external link to see a preview.
 
-In Live Preview or source mode, right-click an external URL and choose **Convert URL to Markdown link** to replace it with `[page title](url)`.
+In Live Preview or source mode, right-click an external URL and choose **Convert URL to Markdown link** to replace it with `[page title](url)`. For GitHub pull request and issue links, the menu also includes **Add repo name prefix**, **Copy PR ID**, and **Copy agent session title**.
 
 ## Authentication
 

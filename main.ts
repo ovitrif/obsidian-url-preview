@@ -86,7 +86,7 @@ interface GitHubIssueReference {
 
 type GitHubIssueState = 'Open' | 'Draft' | 'Merged' | 'Closed';
 
-type GitHubReferenceCopyHandler = (githubReference: string) => void;
+type GitHubReferenceCopyHandler = (event: MouseEvent | KeyboardEvent) => void;
 
 interface InlinePreviewControlsState {
     container: HTMLElement;
@@ -171,6 +171,41 @@ const TOOLBAR_TOOLTIP_OPTIONS = {
 };
 const EDITOR_LINK_SELECTOR = '.external-link, .cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]';
 
+function shouldCopyFullGitHubReference(event?: MouseEvent | KeyboardEvent): boolean {
+    if (!event) return false;
+    return Platform.isMacOS ? event.metaKey : event.altKey;
+}
+
+function getGitHubReferenceCopyAriaLabel(): string {
+    const modifierLabel = Platform.isMacOS ? 'Command' : 'Alt';
+    return `Copy #id. Hold ${modifierLabel} to copy owner/repo#id`;
+}
+
+function getGitHubRepoInitials(repo: string): string {
+    return repo
+        .split(/[-_.]+/)
+        .filter((part) => part.length > 0)
+        .map((part) => part[0] ?? '')
+        .join('')
+        .toLowerCase();
+}
+
+interface GitHubHoverCardDisplayTitle {
+    full: string;
+    prefix: string;
+    rest: string;
+}
+
+function formatGitHubHoverCardTitle(repo: string, id: string, title: string): GitHubHoverCardDisplayTitle {
+    const initials = getGitHubRepoInitials(repo);
+    const rest = `#${id} ${title}`;
+    return {
+        full: initials ? `${initials}${rest}` : rest,
+        prefix: initials,
+        rest,
+    };
+}
+
 const RESIZE_HANDLES: { direction: ResizeDirection; cls: string }[] = [
     { direction: 'n', cls: 'resize-handle-n' },
     { direction: 's', cls: 'resize-handle-s' },
@@ -199,20 +234,20 @@ class GitHubPullRequestBadgeWidget extends WidgetType {
         const badge = view.dom.ownerDocument.createElement('span');
         badge.addClass('url-preview-github-pr-badge');
         badge.textContent = `#${this.githubId}`;
-        badge.setAttr('aria-label', 'Copy GitHub ID');
+        badge.setAttr('aria-label', getGitHubReferenceCopyAriaLabel());
         badge.setAttr('role', 'button');
         badge.setAttr('tabindex', '0');
         badge.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            this.copyGitHubReference(this.githubReference);
+            this.copyGitHubReference(event);
         });
         badge.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
 
             event.preventDefault();
             event.stopPropagation();
-            this.copyGitHubReference(this.githubReference);
+            this.copyGitHubReference(event);
         });
         return badge;
     }
@@ -301,12 +336,12 @@ export default class LinkPreviewPlugin extends Plugin {
 
         this.registerEvent(
             this.app.workspace.on('editor-menu', (menu, editor) => {
-                this.addConvertToMarkdownLinkMenuItem(menu, editor);
+                this.addLinkContextMenuItems(menu, editor);
             })
         );
         this.registerEvent(
             this.app.workspace.on('url-menu', (menu, url) => {
-                this.addConvertToMarkdownLinkMenuItemForUrl(menu, url);
+                this.addLinkContextMenuItemsForUrl(menu, url);
             })
         );
         this.registerEditorExtension(this.createGitHubPullRequestBadgeExtension());
@@ -369,8 +404,8 @@ export default class LinkPreviewPlugin extends Plugin {
                         widget: new GitHubPullRequestBadgeWidget(
                             githubReference.id,
                             githubReference.shortReference,
-                            (reference) => {
-                                void this.copyGitHubReference(reference);
+                            (event) => {
+                                void this.copyGitHubReference(githubReference, event);
                             }
                         ),
                     }).range(badgePosition),
@@ -539,7 +574,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private configureGitHubPullRequestBadge(badge: HTMLElement, githubReference: GitHubIssueReference) {
         badge.textContent = `#${githubReference.id}`;
-        badge.setAttr('aria-label', 'Copy GitHub ID');
+        badge.setAttr('aria-label', getGitHubReferenceCopyAriaLabel());
+        badge.setAttr('data-github-id', githubReference.id);
         badge.setAttr('data-github-reference', githubReference.shortReference);
         badge.setAttr('role', 'button');
         badge.setAttr('tabindex', '0');
@@ -551,9 +587,9 @@ export default class LinkPreviewPlugin extends Plugin {
             event.preventDefault();
             event.stopPropagation();
 
-            const currentGitHubReference = badge.getAttribute('data-github-reference');
-            if (currentGitHubReference) {
-                void this.copyGitHubReference(currentGitHubReference);
+            const reference = this.getGitHubReferenceFromBadge(badge);
+            if (reference) {
+                void this.copyGitHubReference(reference, event);
             }
         });
         badge.addEventListener('keydown', (event) => {
@@ -562,11 +598,21 @@ export default class LinkPreviewPlugin extends Plugin {
             event.preventDefault();
             event.stopPropagation();
 
-            const currentGitHubReference = badge.getAttribute('data-github-reference');
-            if (currentGitHubReference) {
-                void this.copyGitHubReference(currentGitHubReference);
+            const reference = this.getGitHubReferenceFromBadge(badge);
+            if (reference) {
+                void this.copyGitHubReference(reference, event);
             }
         });
+    }
+
+    private getGitHubReferenceFromBadge(
+        badge: HTMLElement
+    ): Pick<GitHubIssueReference, 'id' | 'shortReference'> | null {
+        const id = badge.getAttribute('data-github-id');
+        const shortReference = badge.getAttribute('data-github-reference');
+        if (!id || !shortReference) return null;
+
+        return { id, shortReference };
     }
 
     private removeGitHubPullRequestBadge(link: HTMLAnchorElement) {
@@ -603,8 +649,14 @@ export default class LinkPreviewPlugin extends Plugin {
         }
     }
 
-    private async copyGitHubReference(githubReference: string) {
-        await this.copyTextToClipboard(githubReference, githubReference);
+    private async copyGitHubReference(
+        githubReference: Pick<GitHubIssueReference, 'id' | 'shortReference'>,
+        event?: MouseEvent | KeyboardEvent
+    ) {
+        const text = shouldCopyFullGitHubReference(event)
+            ? githubReference.shortReference
+            : `#${githubReference.id}`;
+        await this.copyTextToClipboard(text, text);
     }
 
     private async copyTextToClipboard(text: string, label: string) {
@@ -985,14 +1037,20 @@ export default class LinkPreviewPlugin extends Plugin {
         referenceAction.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            void this.copyGitHubReference(data.shortReference);
+            void this.copyGitHubReference(
+                { id: data.id, shortReference: data.shortReference },
+                event
+            );
         });
         referenceAction.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
 
             event.preventDefault();
             event.stopPropagation();
-            void this.copyGitHubReference(data.shortReference);
+            void this.copyGitHubReference(
+                { id: data.id, shortReference: data.shortReference },
+                event
+            );
         });
 
         const titleRow = card.createDiv('url-preview-github-hover-card-title-row');
@@ -1002,20 +1060,31 @@ export default class LinkPreviewPlugin extends Plugin {
         const titleAction = titleRow.createSpan('url-preview-github-hover-card-title-action');
         titleAction.setAttr('role', 'button');
         titleAction.setAttr('tabindex', '0');
-        titleAction.createSpan({ cls: 'url-preview-github-hover-card-title', text: data.title });
+        const displayTitle = this.formatGitHubHoverCardDisplayTitle(data);
+        const titleEl = titleAction.createSpan('url-preview-github-hover-card-title');
+        if (displayTitle.prefix) {
+            titleEl.createSpan({
+                cls: 'url-preview-github-hover-card-title-prefix',
+                text: displayTitle.prefix,
+            });
+        }
+        titleEl.createSpan({
+            cls: 'url-preview-github-hover-card-title-text',
+            text: displayTitle.rest,
+        });
         const titleCopyIcon = titleAction.createSpan('url-preview-github-hover-card-copy-icon');
         setIcon(titleCopyIcon, 'clipboard');
         titleAction.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            void this.copyTextToClipboard(data.title, 'title');
+            void this.copyTextToClipboard(displayTitle.full, 'title');
         });
         titleAction.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
 
             event.preventDefault();
             event.stopPropagation();
-            void this.copyTextToClipboard(data.title, 'title');
+            void this.copyTextToClipboard(displayTitle.full, 'title');
         });
 
         if (data.description) {
@@ -1083,6 +1152,11 @@ export default class LinkPreviewPlugin extends Plugin {
                 `${reference.type === 'pull' ? 'Pull request' : 'Issue'} #${reference.id}`,
             type: reference.type,
         };
+    }
+
+private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHoverCardDisplayTitle {
+        const repo = data.repoLabel.split('/').pop() ?? data.repoLabel;
+        return formatGitHubHoverCardTitle(repo, data.id, data.title);
     }
 
     private async getGitHubHoverCardData(
@@ -1553,14 +1627,14 @@ export default class LinkPreviewPlugin extends Plugin {
         return Platform.isMacOS ? event.metaKey : event.ctrlKey;
     }
 
-    private addConvertToMarkdownLinkMenuItemForUrl(menu: Menu, url: string) {
+    private addLinkContextMenuItemsForUrl(menu: Menu, url: string) {
         const activeMarkdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (!activeMarkdownView) return;
 
-        this.addConvertToMarkdownLinkMenuItem(menu, activeMarkdownView.editor, url, true);
+        this.addLinkContextMenuItems(menu, activeMarkdownView.editor, url, true);
     }
 
-    private addConvertToMarkdownLinkMenuItem(
+    private addLinkContextMenuItems(
         menu: Menu,
         editor: Editor,
         expectedUrl?: string,
@@ -1574,14 +1648,108 @@ export default class LinkPreviewPlugin extends Plugin {
         if (!link) return;
 
         this.convertLinkMenus.add(menu);
+        const githubReference = this.getGitHubIssueReference(link.url);
+        const isGitHubUrl = this.isGitHubUrl(link.url);
+
         menu.addItem((item) => {
             item
                 .setTitle(this.isBareMarkdownUrl(link) ? 'Convert URL to Markdown link' : 'Use page title as link text')
-                .setIcon('link')
+                .setIcon(isGitHubUrl ? 'github' : 'link')
                 .onClick(() => {
                     void this.convertEditorLinkToMarkdown(editor, link);
                 });
         });
+
+        if (!githubReference) return;
+
+        menu.addItem((item) => {
+            item
+                .setTitle('Add repo name prefix')
+                .setIcon('tag')
+                .onClick(() => {
+                    this.addRepoNamePrefixToEditorLink(editor, link, githubReference);
+                });
+        });
+
+        menu.addItem((item) => {
+            item
+                .setTitle('Copy PR ID')
+                .setIcon('hash')
+                .onClick(() => {
+                    void this.copyGitHubReference(githubReference);
+                });
+        });
+
+        menu.addItem((item) => {
+            item
+                .setTitle('Copy agent session title')
+                .setIcon('clipboard')
+                .onClick(() => {
+                    void this.copyAgentSessionTitle(link.url, githubReference);
+                });
+        });
+    }
+
+    private addRepoNamePrefixToEditorLink(
+        editor: Editor,
+        originalLink: ParsedMarkdownLink,
+        githubReference: GitHubIssueReference
+    ) {
+        const link = this.resolveCurrentEditorLink(editor, originalLink);
+        if (!link) {
+            new Notice('Could not find the link anymore.');
+            return;
+        }
+
+        const prefix = `${githubReference.repo}: `;
+        const content = editor.getValue();
+        if (this.hasRepoNamePrefixBefore(content, link.start, githubReference.repo)) {
+            new Notice(`Already has ${githubReference.repo} prefix.`);
+            return;
+        }
+
+        editor.replaceRange(
+            prefix,
+            editor.offsetToPos(link.start),
+            editor.offsetToPos(link.start),
+            'url-preview-repo-prefix'
+        );
+        editor.setCursor(editor.offsetToPos(link.start + prefix.length + (link.end - link.start)));
+        new Notice(`Added ${githubReference.repo} prefix.`);
+    }
+
+    private hasRepoNamePrefixBefore(content: string, linkStart: number, repo: string): boolean {
+        const before = content.slice(0, linkStart);
+        const candidates = [`${repo} `, `${repo}: `, `${repo}:`];
+
+        return candidates.some((prefix) => {
+            if (!before.toLowerCase().endsWith(prefix.toLowerCase())) return false;
+            if (before.length === prefix.length) return true;
+
+            const charBefore = before[before.length - prefix.length - 1] ?? '';
+            return charBefore === ' ' ||
+                charBefore === '\t' ||
+                charBefore === '\n' ||
+                charBefore === '\r' ||
+                charBefore === '(' ||
+                charBefore === '[' ||
+                charBefore === '{';
+        });
+    }
+
+    private async copyAgentSessionTitle(url: string, githubReference: GitHubIssueReference) {
+        const cached = this.getCachedGitHubHoverCardData(url);
+        let title = cached?.title ?? null;
+
+        if (!title) {
+            const notice = new Notice('Fetching page title...', 0);
+            title = await this.fetchPageTitleForNotice(url, notice);
+            if (!title) return;
+            notice.hide();
+        }
+
+        const displayTitle = formatGitHubHoverCardTitle(githubReference.repo, githubReference.id, title);
+        await this.copyTextToClipboard(displayTitle.full, displayTitle.full);
     }
 
     private getEditorContextLink(editor: Editor, expectedUrl?: string): ParsedMarkdownLink | null {

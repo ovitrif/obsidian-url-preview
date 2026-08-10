@@ -298,6 +298,10 @@
     text-overflow: ellipsis;
 }
 
+.url-preview-github-hover-card-title-prefix {
+    font-weight: var(--font-normal);
+}
+
 .url-preview-github-hover-card-description-shell {
     overflow: hidden;
     padding-top: 12px;

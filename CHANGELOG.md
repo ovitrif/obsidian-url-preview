@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Editor context menu actions for GitHub pull request and issue links: add repo name prefix (inserts `repo: ` before the link), copy PR ID, and copy agent session title.
+
+### Changed
+
+- GitHub pull request ID badges and hover-card references now copy `#123` on click, or `owner/repo#123` when holding ⌘ on macOS / `Alt` elsewhere.
+- GitHub hover card titles now show computed repo initials plus the issue/PR number before the title (for example `ba#1141 fix: ...`).
+- Convert URL context menu item now uses the GitHub icon for GitHub links.
+
 ## [0.6.0] - 2026-08-08
 
 ### Added
