@@ -82,6 +82,7 @@ Uses `Platform.isMacOS` to determine modifier key (Meta vs Control) for editor m
 
 ## Rules
 
+- Trunk-based: commit on `master`. No feature or release branches unless needed.
 - ALWAYS build after changes
 - ALWAYS lint before pushing (`npm run lint`). The `build` script includes linting automatically.
 - In dev mode, the `dist/` symlink handles deployment to the vault automatically. For production/release builds, copy built files manually: `cp main.js manifest.json styles.css "$VAULT/.obsidian/plugins/url-preview/"`
