@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-01
+
 ### Added
 
 - Editor context menu actions for GitHub pull request and issue links: add repo name prefix (inserts `repo: ` before the link), copy PR ID, and copy agent session title.
