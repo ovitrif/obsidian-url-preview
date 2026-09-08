@@ -96,6 +96,27 @@ interface InlinePreviewControlsState {
     target?: LinkInfo;
 }
 
+interface PreviewWebviewElement extends HTMLElement {
+    canGoBack(): boolean;
+    canGoForward(): boolean;
+    executeJavaScript(code: string): Promise<unknown>;
+    getURL(): string;
+    goBack(): void;
+    goForward(): void;
+    loadURL(url: string): Promise<void>;
+}
+
+type PreviewFrameElement = HTMLIFrameElement | PreviewWebviewElement;
+
+interface PreviewFrameController {
+    currentUrl: string;
+    element: PreviewFrameElement;
+    fallbackHistory: string[];
+    fallbackHistoryIndex: number;
+    isReady: boolean;
+    startLoading?: () => void;
+}
+
 interface GitHubPullRequestBadgeObserver {
     observer: MutationObserver;
     scheduled: boolean;
@@ -140,11 +161,14 @@ interface ElectronCookies {
     get(filter: { url?: string; name?: string }): Promise<ElectronCookie[]>;
 }
 
+interface ElectronSession {
+    cookies?: ElectronCookies;
+    flushStorageData?: () => Promise<void>;
+}
+
 interface ElectronModule {
     session?: {
-        defaultSession?: {
-            cookies?: ElectronCookies;
-        };
+        defaultSession?: ElectronSession;
     };
 }
 
@@ -162,14 +186,13 @@ const GITHUB_HOVER_CARD_HIDE_DELAY_MS = 300;
 const GITHUB_HOVER_CARD_MARGIN = 10;
 const GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH = 320;
 const MIN_PREVIEW_LOADING_MS = 750;
-const POST_LOAD_SPINNER_MS = 350;
 const TOOLBAR_TOOLTIP_OPTIONS = {
     classes: ['url-preview-toolbar-tooltip'],
     delay: 250,
     gap: 6,
     placement: 'bottom' as const,
 };
-const EDITOR_LINK_SELECTOR = '.external-link, .cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, [data-href], [data-url], a[href]';
+const EDITOR_LINK_SELECTOR = '.external-link, .cm-link, .cm-hmd-external-link, .cm-url, .cm-underline, .url-preview-github-reference, [data-href], [data-url], a[href]';
 
 function shouldCopyFullGitHubReference(event?: MouseEvent | KeyboardEvent): boolean {
     if (!event) return false;
@@ -272,6 +295,7 @@ interface LinkPreviewSettings {
     showOpenInBrowser: boolean;
     showCloseButton: boolean;
     showGitHubPullRequestIds: boolean;
+    showInlinePreviewButton: boolean;
     allowResize: boolean;
     persistResize: boolean;
     domainZoomLevels: Record<string, number>;
@@ -298,6 +322,7 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'per
     showOpenInBrowser: true,
     showCloseButton: true,
     showGitHubPullRequestIds: true,
+    showInlinePreviewButton: false,
     allowResize: true,
     persistResize: false,
     domainZoomLevels: {},
@@ -383,22 +408,24 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private buildGitHubPullRequestBadgeDecorations(view: EditorView): DecorationSet {
-        if (!this.settings.showGitHubPullRequestIds) return Decoration.none;
-
         const links = this.parseEditorLinks(view.state.doc.toString());
 
         return Decoration.set(
             links.flatMap((link) => {
+                const linkDecorations = this.shouldMarkBareGitHubLink(link)
+                    ? [Decoration.mark({ class: 'url-preview-github-reference' }).range(link.start, link.end)]
+                    : [];
                 const githubReference = this.getGitHubIssueReference(link.url);
-                if (!githubReference) return [];
+                if (!this.settings.showGitHubPullRequestIds || !githubReference) return linkDecorations;
 
                 const badgePosition = link.end;
 
                 if (this.linkTextContainsGitHubId(link.text, githubReference.id)) {
-                    return [];
+                    return linkDecorations;
                 }
 
                 return [
+                    ...linkDecorations,
                     Decoration.widget({
                         side: GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE,
                         widget: new GitHubPullRequestBadgeWidget(
@@ -1287,10 +1314,19 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
         state.target = linkInfo;
 
-        if (this.canInlineConvertGitHubUrl(linkInfo)) {
+        const canConvertGitHubUrl = this.canInlineConvertGitHubUrl(linkInfo);
+        if (canConvertGitHubUrl) {
             state.githubConvertButton.removeClass('is-hidden');
         } else {
             state.githubConvertButton.addClass('is-hidden');
+        }
+        if (this.settings.showInlinePreviewButton) {
+            state.previewButton.removeClass('is-hidden');
+        } else {
+            state.previewButton.addClass('is-hidden');
+        }
+        if (!canConvertGitHubUrl && !this.settings.showInlinePreviewButton) {
+            this.hideInlinePreviewControls(doc);
         }
     }
 
@@ -1319,7 +1355,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             void this.convertEditorViewLinkToMarkdown(targetInfo.editorView, targetInfo.markdownLink);
         });
 
-        const previewButton = container.createEl('button', { cls: 'url-preview-inline-button' });
+        const previewButton = container.createEl('button', {
+            cls: `url-preview-inline-button${this.settings.showInlinePreviewButton ? '' : ' is-hidden'}`,
+        });
         previewButton.setAttr('type', 'button');
         previewButton.setAttr('aria-label', 'Preview link');
         setIcon(previewButton, 'eye');
@@ -1573,6 +1611,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.isGitHubUrl(linkInfo.url) &&
             this.isBareMarkdownUrl(linkInfo.markdownLink)
         );
+    }
+
+    private shouldMarkBareGitHubLink(link: ParsedMarkdownLink): boolean {
+        return this.isBareMarkdownUrl(link) &&
+            this.isGitHubUrl(link.url) &&
+            !/^https?:\/\//i.test(link.text);
     }
 
     private getClientRectForPoint(element: HTMLElement, point: ScreenPoint): ViewRect | null {
@@ -1987,39 +2031,28 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const doc = link.ownerDocument;
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect, doc);
+        const frameController = this.createPreviewFrame(doc, url);
 
         if (this.shouldShowToolbar()) {
-            this.createButtons(previewEl, url);
+            this.createButtons(previewEl, frameController);
         }
 
         previewEl.setAttr('data-preview-url', url);
 
         const wrapper = previewEl.createDiv('preview-iframe-wrapper');
         wrapper.addClass('preview-scaled-viewport');
-
-        const loading = previewEl.createDiv('preview-loading');
+        wrapper.appendChild(frameController.element);
+        const loading = wrapper.createDiv('preview-loading');
         loading.addClass('loading-spinner');
-        const loadingStartedAt = Date.now();
+        loading.setAttr('aria-label', 'Loading preview');
+        loading.setAttr('role', 'status');
+        this.bindPreviewFrame(previewEl, frameController, loading);
 
         const cleanup = () => {
+            void this.flushPreviewSessionStorage();
             previewEl.remove();
             this.activePreview = undefined;
         };
-
-        const iframe = doc.createElement('iframe');
-
-        iframe.onload = () => {
-            this.revealLoadedIframe(iframe, loading, loadingStartedAt);
-            if (this.isGitHubUrl(url)) {
-                void this.updateGitHubAuthControls(previewEl);
-            }
-        };
-
-        iframe.onerror = () => {
-            loading.textContent = 'Failed to load preview';
-        };
-
-        wrapper.appendChild(iframe);
 
         // Add preview hover handlers
         previewEl.addEventListener('mouseenter', () => {
@@ -2065,22 +2098,170 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         doc.body.appendChild(previewEl);
         this.applyPreviewViewportProps(previewEl, url);
-        this.loadPreviewIframe(iframe, url);
+        this.navigatePreviewFrame(frameController, url);
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
     }
 
-    private revealLoadedIframe(iframe: HTMLIFrameElement, loading: HTMLElement, loadingStartedAt: number) {
-        const win = iframe.ownerDocument.defaultView ?? window;
-        win.requestAnimationFrame(() => {
-            win.requestAnimationFrame(() => {
-                iframe.addClass('is-loaded');
-                const elapsed = Date.now() - loadingStartedAt;
-                const remainingMinimum = Math.max(0, MIN_PREVIEW_LOADING_MS - elapsed);
-                win.setTimeout(() => {
-                    loading.remove();
-                }, Math.max(remainingMinimum, POST_LOAD_SPINNER_MS));
+    private createPreviewFrame(doc: Document, url: string): PreviewFrameController {
+        if (Platform.isDesktopApp) {
+            const candidate = doc.createElement('webview');
+            if (this.isPreviewWebview(candidate)) {
+                candidate.addClass('preview-frame');
+                return {
+                    currentUrl: url,
+                    element: candidate,
+                    fallbackHistory: [],
+                    fallbackHistoryIndex: -1,
+                    isReady: false,
+                };
+            }
+        }
+
+        const iframe = doc.createElement('iframe');
+        iframe.addClass('preview-frame');
+        return {
+            currentUrl: url,
+            element: iframe,
+            fallbackHistory: [],
+            fallbackHistoryIndex: -1,
+            isReady: true,
+        };
+    }
+
+    private isPreviewWebview(element: HTMLElement): element is PreviewWebviewElement {
+        return element.tagName.toLowerCase() === 'webview' &&
+            'loadURL' in element &&
+            typeof element.loadURL === 'function';
+    }
+
+    private bindPreviewFrame(
+        previewEl: HTMLElement,
+        controller: PreviewFrameController,
+        loading: HTMLElement
+    ) {
+        let loadingStartedAt = Date.now();
+        let loadSequence = 0;
+        let failedSequence = -1;
+        const frame = controller.element;
+        const startLoading = () => {
+            loadSequence++;
+            failedSequence = -1;
+            loadingStartedAt = Date.now();
+            frame.removeClass('is-loaded');
+            loading.textContent = '';
+            loading.removeClass('is-error');
+            loading.removeClass('is-hidden');
+        };
+        const finishLoading = () => {
+            const sequence = loadSequence;
+            if (failedSequence === sequence) return;
+
+            void this.revealLoadedPreviewFrame(
+                frame,
+                loading,
+                loadingStartedAt,
+                () => sequence === loadSequence
+            ).then((didReveal) => {
+                if (!didReveal || !frame.isConnected) return;
+
+                if (this.isGitHubUrl(controller.currentUrl)) {
+                    void this.updateGitHubAuthControls(previewEl);
+                }
+                void this.flushPreviewSessionStorage();
             });
-        });
+        };
+        const failLoading = (event: Event) => {
+            if ('isMainFrame' in event && event.isMainFrame === false) return;
+            if ('errorCode' in event && event.errorCode === -3) return;
+
+            failedSequence = loadSequence;
+            loading.textContent = 'Failed to load preview';
+            loading.addClass('is-error');
+            loading.removeClass('is-hidden');
+        };
+        const updateNavigation = (event?: Event) => {
+            const eventUrl = event ? this.getPreviewNavigationEventUrl(event) : null;
+            const currentUrl = eventUrl ?? this.getPreviewFrameUrl(controller);
+            if (currentUrl) {
+                controller.currentUrl = currentUrl;
+                previewEl.setAttr('data-preview-url', currentUrl);
+            }
+            this.updatePreviewNavigationControls(previewEl, controller);
+            this.applyPreviewViewportProps(previewEl, controller.currentUrl);
+        };
+        controller.startLoading = startLoading;
+
+        if (this.isPreviewWebview(frame)) {
+            frame.addEventListener('dom-ready', () => {
+                controller.isReady = true;
+                updateNavigation();
+            });
+            frame.addEventListener('did-start-loading', startLoading);
+            frame.addEventListener('did-stop-loading', finishLoading);
+            frame.addEventListener('did-fail-load', failLoading);
+            frame.addEventListener('did-navigate', updateNavigation);
+            frame.addEventListener('did-navigate-in-page', updateNavigation);
+        } else {
+            frame.addEventListener('load', () => {
+                if (loading.classList.contains('is-hidden')) {
+                    startLoading();
+                }
+                updateNavigation();
+                finishLoading();
+            });
+            frame.addEventListener('error', failLoading);
+        }
+
+        startLoading();
+    }
+
+    private async revealLoadedPreviewFrame(
+        frame: PreviewFrameElement,
+        loading: HTMLElement,
+        loadingStartedAt: number,
+        isCurrentLoad: () => boolean
+    ): Promise<boolean> {
+        await this.waitForPreviewFramePaint(frame);
+        if (!isCurrentLoad() || !frame.isConnected) return false;
+
+        const elapsed = Date.now() - loadingStartedAt;
+        const remainingMinimum = Math.max(0, MIN_PREVIEW_LOADING_MS - elapsed);
+        if (remainingMinimum > 0) {
+            await new Promise<void>((resolve) => {
+                const win = frame.ownerDocument.defaultView ?? window;
+                win.setTimeout(resolve, remainingMinimum);
+            });
+        }
+        if (!isCurrentLoad() || !frame.isConnected) return false;
+
+        frame.addClass('is-loaded');
+        await this.waitForAnimationFrames(frame.ownerDocument, 1);
+        if (!isCurrentLoad() || !frame.isConnected) return false;
+
+        loading.addClass('is-hidden');
+        return true;
+    }
+
+    private async waitForPreviewFramePaint(frame: PreviewFrameElement) {
+        if (this.isPreviewWebview(frame)) {
+            try {
+                await frame.executeJavaScript(
+                    'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+                );
+                return;
+            } catch {
+                // Fall through to host animation frames if the guest cannot execute JavaScript.
+            }
+        }
+
+        await this.waitForAnimationFrames(frame.ownerDocument, 2);
+    }
+
+    private async waitForAnimationFrames(doc: Document, count: number) {
+        const win = doc.defaultView ?? window;
+        for (let frame = 0; frame < count; frame++) {
+            await new Promise<void>((resolve) => win.requestAnimationFrame(() => resolve()));
+        }
     }
 
     private cleanupTimeout?: number;
@@ -2248,8 +2429,50 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
     }
 
-    private loadPreviewIframe(iframe: HTMLIFrameElement, url: string) {
-        iframe.setAttribute('src', url);
+    private navigatePreviewFrame(controller: PreviewFrameController, url: string, addToHistory = true) {
+        const frame = controller.element;
+        controller.currentUrl = url;
+        controller.startLoading?.();
+
+        if (this.isPreviewWebview(frame)) {
+            if (!frame.isConnected || !controller.isReady) {
+                frame.setAttr('src', url);
+                return;
+            }
+
+            try {
+                void frame.loadURL(url).catch(() => undefined);
+            } catch {
+                frame.setAttr('src', url);
+            }
+            return;
+        }
+
+        if (addToHistory) {
+            controller.fallbackHistory = controller.fallbackHistory.slice(0, controller.fallbackHistoryIndex + 1);
+            controller.fallbackHistory.push(url);
+            controller.fallbackHistoryIndex = controller.fallbackHistory.length - 1;
+        }
+        frame.setAttr('src', url);
+    }
+
+    private getPreviewFrameUrl(controller: PreviewFrameController): string {
+        const frame = controller.element;
+        if (this.isPreviewWebview(frame)) {
+            try {
+                return frame.getURL() || controller.currentUrl;
+            } catch {
+                return controller.currentUrl;
+            }
+        }
+
+        return controller.currentUrl;
+    }
+
+    private getPreviewNavigationEventUrl(event: Event): string | null {
+        if ('url' in event && typeof event.url === 'string') return event.url;
+        if ('validatedURL' in event && typeof event.validatedURL === 'string') return event.validatedURL;
+        return null;
     }
 
     private async removeLegacyPreviewCache() {
@@ -2315,7 +2538,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private isGitHubUrl(url: string): boolean {
         try {
-            return new URL(url).hostname === 'github.com';
+            const hostname = new URL(url).hostname.toLowerCase();
+            return hostname === 'github.com' || hostname === 'www.github.com';
         } catch {
             return false;
         }
@@ -2351,7 +2575,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return null;
     }
 
-    private getElectronCookies(): ElectronCookies | null {
+    private getElectronSession(): ElectronSession | null {
         if (!Platform.isDesktopApp) return null;
 
         const requireFn = this.getRequireFunction();
@@ -2359,9 +2583,24 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         try {
             const electron = requireFn('electron') as ElectronModule;
-            return electron.session?.defaultSession?.cookies ?? null;
+            return electron.session?.defaultSession ?? null;
         } catch {
             return null;
+        }
+    }
+
+    private getElectronCookies(): ElectronCookies | null {
+        return this.getElectronSession()?.cookies ?? null;
+    }
+
+    private async flushPreviewSessionStorage() {
+        const electronSession = this.getElectronSession();
+        if (!electronSession?.flushStorageData) return;
+
+        try {
+            await electronSession.flushStorageData();
+        } catch {
+            // Session persistence is best-effort on Electron versions without this support.
         }
     }
 
@@ -2452,18 +2691,19 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         setTooltip(button, label, TOOLBAR_TOOLTIP_OPTIONS);
     }
 
-    private createButtons(container: HTMLElement, url: string) {
+    private createButtons(container: HTMLElement, frameController: PreviewFrameController) {
         const buttons = container.createDiv('preview-buttons');
         const win = container.ownerDocument.defaultView ?? window;
+        this.createNavigationControls(buttons, container, frameController);
 
         if (this.settings.allowResize) {
             this.createSizeControls(buttons, container);
         }
 
-        this.createZoomControls(buttons, container, url);
+        this.createZoomControls(buttons, container, () => this.getPreviewFrameUrl(frameController));
 
-        if (this.isGitHubUrl(url)) {
-            this.createGitHubAuthButton(buttons, container, url);
+        if (this.isGitHubUrl(frameController.currentUrl)) {
+            this.createGitHubAuthButton(buttons, frameController);
         }
 
         if (this.settings.allowResize) {
@@ -2501,7 +2741,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.setToolbarTooltip(openBtn, 'Open in external browser');
             openBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                win.open(url);
+                win.open(this.getPreviewFrameUrl(frameController));
             });
         }
 
@@ -2516,20 +2756,167 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
     }
 
-    private createGitHubAuthButton(buttons: HTMLElement, container: HTMLElement, url: string) {
+    private createNavigationControls(
+        buttons: HTMLElement,
+        previewEl: HTMLElement,
+        controller: PreviewFrameController
+    ) {
+        const navigation = buttons.createDiv('preview-navigation');
+        const backButton = navigation.createEl('button', {
+            cls: 'clickable-icon preview-navigation-back',
+        });
+        setIcon(backButton, 'arrow-left');
+        this.setToolbarTooltip(backButton, 'Back');
+
+        const forwardButton = navigation.createEl('button', {
+            cls: 'clickable-icon preview-navigation-forward',
+        });
+        setIcon(forwardButton, 'arrow-right');
+        this.setToolbarTooltip(forwardButton, 'Forward');
+
+        const addressInput = navigation.createEl('input', { cls: 'preview-address-input' });
+        addressInput.setAttr('type', 'text');
+        addressInput.setAttr('aria-label', 'Preview address');
+        addressInput.setAttr('autocomplete', 'off');
+        addressInput.setAttr('autocapitalize', 'off');
+        addressInput.setAttr('spellcheck', 'false');
+        addressInput.value = controller.currentUrl;
+
+        const updateControls = () => this.updatePreviewNavigationControls(previewEl, controller);
+        const frame = controller.element;
+        if (this.isPreviewWebview(frame)) {
+            frame.addEventListener('did-navigate', updateControls);
+            frame.addEventListener('did-navigate-in-page', updateControls);
+            frame.addEventListener('did-finish-load', updateControls);
+        } else {
+            frame.addEventListener('load', updateControls);
+        }
+
+        backButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this.goBackInPreview(controller);
+            updateControls();
+        });
+        forwardButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this.goForwardInPreview(controller);
+            updateControls();
+        });
+        addressInput.addEventListener('click', (event) => event.stopPropagation());
+        addressInput.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+            if (event.key === 'Escape') {
+                addressInput.value = this.getPreviewFrameUrl(controller);
+                addressInput.blur();
+                return;
+            }
+            if (event.key !== 'Enter') return;
+
+            const url = this.normalizeNavigationUrl(addressInput.value);
+            if (!url) {
+                new Notice('Enter a valid web address.');
+                return;
+            }
+
+            this.navigatePreviewFrame(controller, url);
+            previewEl.setAttr('data-preview-url', url);
+            addressInput.value = url;
+            addressInput.blur();
+            updateControls();
+        });
+
+        updateControls();
+    }
+
+    private updatePreviewNavigationControls(previewEl: HTMLElement, controller: PreviewFrameController) {
+        const addressInput = previewEl.querySelector('.preview-address-input');
+        if (addressInput instanceof HTMLInputElement && addressInput.ownerDocument.activeElement !== addressInput) {
+            addressInput.value = this.getPreviewFrameUrl(controller);
+        }
+
+        const backButton = previewEl.querySelector('.preview-navigation-back');
+        if (backButton instanceof HTMLButtonElement) {
+            backButton.disabled = !this.canGoBackInPreview(controller);
+        }
+        const forwardButton = previewEl.querySelector('.preview-navigation-forward');
+        if (forwardButton instanceof HTMLButtonElement) {
+            forwardButton.disabled = !this.canGoForwardInPreview(controller);
+        }
+    }
+
+    private canGoBackInPreview(controller: PreviewFrameController): boolean {
+        const frame = controller.element;
+        if (this.isPreviewWebview(frame)) {
+            try {
+                return frame.canGoBack();
+            } catch {
+                return false;
+            }
+        }
+        return controller.fallbackHistoryIndex > 0;
+    }
+
+    private canGoForwardInPreview(controller: PreviewFrameController): boolean {
+        const frame = controller.element;
+        if (this.isPreviewWebview(frame)) {
+            try {
+                return frame.canGoForward();
+            } catch {
+                return false;
+            }
+        }
+        return controller.fallbackHistoryIndex >= 0 &&
+            controller.fallbackHistoryIndex < controller.fallbackHistory.length - 1;
+    }
+
+    private goBackInPreview(controller: PreviewFrameController) {
+        const frame = controller.element;
+        if (this.isPreviewWebview(frame)) {
+            if (this.canGoBackInPreview(controller)) frame.goBack();
+            return;
+        }
+        if (!this.canGoBackInPreview(controller)) return;
+
+        controller.fallbackHistoryIndex--;
+        const url = controller.fallbackHistory[controller.fallbackHistoryIndex];
+        if (url) this.navigatePreviewFrame(controller, url, false);
+    }
+
+    private goForwardInPreview(controller: PreviewFrameController) {
+        const frame = controller.element;
+        if (this.isPreviewWebview(frame)) {
+            if (this.canGoForwardInPreview(controller)) frame.goForward();
+            return;
+        }
+        if (!this.canGoForwardInPreview(controller)) return;
+
+        controller.fallbackHistoryIndex++;
+        const url = controller.fallbackHistory[controller.fallbackHistoryIndex];
+        if (url) this.navigatePreviewFrame(controller, url, false);
+    }
+
+    private normalizeNavigationUrl(candidate: string): string | null {
+        const normalized = this.normalizeUrl(candidate);
+        if (normalized) return normalized;
+
+        const trimmed = candidate.trim();
+        if (!/^(?:localhost|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d+)?(?:\/\S*)?$/.test(trimmed)) {
+            return null;
+        }
+        return this.normalizeUrl(`https://${trimmed}`);
+    }
+
+    private createGitHubAuthButton(buttons: HTMLElement, controller: PreviewFrameController) {
         const authBtn = buttons.createEl('button', { cls: 'clickable-icon preview-github-auth-button' });
         this.configureGitHubAuthButton(authBtn, 'unknown');
         void this.updateGitHubAuthButton(authBtn);
 
         authBtn.addEventListener('click', (event) => {
             event.stopPropagation();
-            const iframe = container.querySelector('.preview-iframe-wrapper iframe');
-            if (!(iframe instanceof HTMLIFrameElement)) return;
-
             const authState = authBtn.getAttribute('data-github-auth-state');
-            iframe.removeClass('is-loaded');
-            iframe.setAttribute(
-                'src',
+            const url = this.getPreviewFrameUrl(controller);
+            this.navigatePreviewFrame(
+                controller,
                 authState === 'signed-in' ? this.getGitHubLogoutUrl(url) : this.getGitHubLoginUrl(url)
             );
         });
@@ -2628,7 +3015,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         });
     }
 
-    private createZoomControls(buttons: HTMLElement, previewEl: HTMLElement, url: string) {
+    private createZoomControls(buttons: HTMLElement, previewEl: HTMLElement, getUrl: () => string) {
         const zoomControls = buttons.createDiv('preview-zoom-controls');
         const zoomInputWrap = zoomControls.createDiv('preview-zoom-input-wrap');
         const zoomInput = zoomInputWrap.createEl('input', { cls: 'preview-zoom-input' });
@@ -2641,9 +3028,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         zoomInput.setAttr('aria-label', 'Preview zoom percentage');
 
         const updateZoomInput = () => {
-            zoomInput.value = String(this.getDomainZoomPercent(url));
+            zoomInput.value = String(this.getDomainZoomPercent(getUrl()));
         };
         const applyZoom = async (value: number) => {
+            const url = getUrl();
             await this.setDomainZoomPercent(url, value);
             updateZoomInput();
             this.applyPreviewViewportProps(previewEl, url);
@@ -2679,7 +3067,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.setToolbarTooltip(zoomOutBtn, 'Zoom out');
         zoomOutBtn.addEventListener('click', (event) => {
             event.stopPropagation();
-            void applyZoom(this.getDomainZoomPercent(url) - 10);
+            void applyZoom(this.getDomainZoomPercent(getUrl()) - 10);
         });
 
         const zoomInBtn = zoomControls.createEl('button', { cls: 'clickable-icon preview-zoom-button' });
@@ -2687,7 +3075,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.setToolbarTooltip(zoomInBtn, 'Zoom in');
         zoomInBtn.addEventListener('click', (event) => {
             event.stopPropagation();
-            void applyZoom(this.getDomainZoomPercent(url) + 10);
+            void applyZoom(this.getDomainZoomPercent(getUrl()) + 10);
         });
 
         const resetZoomBtn = zoomControls.createEl('button', { cls: 'clickable-icon preview-zoom-button' });
@@ -2696,6 +3084,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         resetZoomBtn.addEventListener('click', (event) => {
             event.stopPropagation();
             void (async () => {
+                const url = getUrl();
                 await this.resetDomainZoomPercent(url);
                 updateZoomInput();
                 this.applyPreviewViewportProps(previewEl, url);
@@ -3143,12 +3532,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private parseBareMarkdownUrls(content: string, excludedRanges: TextRange[] = []): ParsedMarkdownLink[] {
         const links: ParsedMarkdownLink[] = [];
-        const urlRegex = /https?:\/\/[^\s<>"')]+/gi;
+        const occupiedRanges = [...excludedRanges];
+        const urlRegex = /(?:https?:\/\/|(?:www\.)?github\.com\/)[^\s<>"')]+/gi;
         let match: RegExpExecArray | null;
 
         while ((match = urlRegex.exec(content)) !== null) {
             const start = match.index;
-            const text = match[0];
+            const text = this.trimBareUrlPunctuation(match[0]);
             const end = start + text.length;
             if (excludedRanges.some((range) => start >= range.start && end <= range.end)) continue;
 
@@ -3156,9 +3546,31 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             if (!url) continue;
 
             links.push(this.createBareMarkdownUrlLink(start, end, text, url));
+            occupiedRanges.push({ start, end });
         }
 
-        return links;
+        const githubReferenceRegex = /(^|[\s([{:;,])([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+#\d+)\b/gm;
+        while ((match = githubReferenceRegex.exec(content)) !== null) {
+            const prefix = match[1] ?? '';
+            const text = match[2];
+            if (!text) continue;
+
+            const start = match.index + prefix.length;
+            const end = start + text.length;
+            if (occupiedRanges.some((range) => start >= range.start && end <= range.end)) continue;
+
+            const url = this.normalizeUrl(text);
+            if (!url) continue;
+
+            links.push(this.createBareMarkdownUrlLink(start, end, text, url));
+            occupiedRanges.push({ start, end });
+        }
+
+        return links.sort((a, b) => a.start - b.start);
+    }
+
+    private trimBareUrlPunctuation(candidate: string): string {
+        return candidate.replace(/[.,;:!?\]}]+$/g, '');
     }
 
     private findClosingBracket(content: string, start: number): number {
@@ -3440,11 +3852,22 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private normalizeUrl(candidate: string): string | null {
         const trimmed = candidate.trim();
-        if (!/^https?:\/\//i.test(trimmed)) {
-            return null;
-        }
+        const githubReference = trimmed.match(
+            /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9_.-]+)#(\d+)$/
+        );
+        const normalizedCandidate = githubReference
+            ? `https://github.com/${githubReference[1]}/${githubReference[2]}/issues/${githubReference[3]}`
+            : /^(?:www\.)?github\.com(?:\/|$)/i.test(trimmed)
+                ? `https://${trimmed}`
+                : trimmed;
+        if (!/^https?:\/\//i.test(normalizedCandidate)) return null;
+
         try {
-            const url = new URL(trimmed);
+            const url = new URL(normalizedCandidate);
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+            if (url.hostname.toLowerCase() === 'www.github.com') {
+                url.hostname = 'github.com';
+            }
             return url.href;
         } catch {
             return null;
@@ -3510,6 +3933,18 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     .setValue(this.plugin.settings.stickyPopup)
                     .onChange(async (value) => {
                         this.plugin.settings.stickyPopup = value;
+                        await this.plugin.saveSettings();
+                    }));
+        });
+
+        behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Show preview button on link hover')
+                .setDesc('Show the eye button beside links while hovering')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showInlinePreviewButton)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showInlinePreviewButton = value;
                         await this.plugin.saveSettings();
                     }));
         });

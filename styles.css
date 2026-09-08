@@ -38,6 +38,53 @@
     border-bottom: 1px solid var(--background-modifier-border);
 }
 
+.preview-navigation {
+    display: flex;
+    flex: 1 1 220px;
+    align-items: center;
+    min-width: 120px;
+    overflow: hidden;
+    margin-right: auto;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background-color: var(--background-primary);
+}
+
+.preview-navigation .clickable-icon {
+    flex: 0 0 auto;
+    border-radius: 0;
+}
+
+.preview-navigation .clickable-icon + .clickable-icon {
+    border-left: 1px solid var(--background-modifier-border);
+}
+
+.hover-popup .preview-navigation input.preview-address-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: var(--input-height);
+    margin: 0;
+    padding: 0 8px;
+    overflow: hidden;
+    border: 0;
+    border-left: 1px solid var(--background-modifier-border);
+    border-radius: 0;
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-normal);
+    font-size: var(--font-ui-smaller);
+    outline: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.hover-popup .preview-navigation input.preview-address-input:focus,
+.hover-popup .preview-navigation input.preview-address-input:focus-visible {
+    border-color: var(--background-modifier-border);
+    box-shadow: inset 0 0 0 1px var(--interactive-accent);
+    outline: 0;
+}
+
 .tooltip.url-preview-toolbar-tooltip {
     z-index: 22;
     max-width: min(260px, calc(100vw - 24px));
@@ -384,22 +431,24 @@
     border-radius: inherit;
 }
 
-/* Preview iframe */
-.preview-iframe-wrapper iframe {
-    visibility: hidden;
+/* Preview frame */
+.preview-iframe-wrapper .preview-frame {
+    display: flex;
     width: 100%;
     height: 100%;
     border: none;
     background-color: var(--background-primary);
+    opacity: 0;
     pointer-events: all;
+    transition: opacity 140ms ease-out;
 }
 
-.preview-iframe-wrapper iframe.is-loaded {
-    visibility: visible;
+.preview-iframe-wrapper .preview-frame.is-loaded {
+    opacity: 1;
 }
 
-/* Scaled iframe viewport for preview zoom controls */
-.preview-iframe-wrapper.preview-scaled-viewport iframe {
+/* Scaled frame viewport for preview zoom controls */
+.preview-iframe-wrapper.preview-scaled-viewport .preview-frame {
     width: var(--preview-frame-width, 100%);
     height: var(--preview-frame-height, 100%);
     transform: scale(var(--preview-frame-scale, 1));
@@ -513,13 +562,23 @@
 
 /* Loading state indicator */
 .preview-loading {
-    padding: 20px;
-    text-align: center;
-    color: var(--text-muted);
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
+    z-index: 2;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background-color: var(--background-primary);
+    color: var(--text-muted);
+    opacity: 1;
+    text-align: center;
+    transition: opacity 180ms ease-out;
+}
+
+.preview-loading.is-hidden {
+    opacity: 0;
+    pointer-events: none;
 }
 
 .preview-loading::after {
@@ -531,6 +590,10 @@
     border-radius: 50%;
     border-right-color: transparent;
     animation: rotate 0.5s linear infinite;
+}
+
+.preview-loading.is-error::after {
+    display: none;
 }
 
 @keyframes rotate {
@@ -581,7 +644,7 @@
 .hover-popup:has(.resize-handle-se:hover)::after { border-bottom-color: var(--interactive-accent); border-right-color: var(--interactive-accent); }
 
 /* Disable iframe pointer events during resize */
-.hover-popup.is-resizing .preview-iframe-wrapper iframe {
+.hover-popup.is-resizing .preview-iframe-wrapper .preview-frame {
     pointer-events: none;
 }
 

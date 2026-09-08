@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-08
+
+### Added
+
+- Preview toolbar navigation with back and forward buttons plus an editable address bar.
+- Setting to show the inline preview eye button while hovering links, disabled by default.
+
+### Changed
+
+- GitHub link conversion now supports scheme-less `github.com/...` URLs and short references such as `owner/repo#123` from both the inline action and editor context menu.
+- Desktop previews now use Obsidian's persistent embedded browser session when available so login state survives across previews more reliably.
+
+### Fixed
+
+- Preview loader now waits for navigation and rendering to finish, handles overlapping loads safely, and fades out instead of exposing a blank page.
+
 ## [0.7.0] - 2026-09-01
 
 ### Added

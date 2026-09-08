@@ -18,6 +18,14 @@ jobs:
           node-version: "18"
       - run: npm ci
       - run: npm run build
+      - name: Extract release notes
+        run: |
+          awk -v version="$GITHUB_REF_NAME" '
+            index($0, "## [" version "] - ") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -26,6 +34,7 @@ jobs:
           gh release create "$tag" \
             --title="Release $tag" \
             --latest \
+            --notes-file=release-notes.md \
             main.js manifest.json styles.css \
             assets/fonts/FlowCircular-Regular.ttf \
             assets/fonts/FlowCircular-OFL.txt
