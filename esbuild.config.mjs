@@ -1,5 +1,5 @@
 import { builtinModules } from "node:module";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync } from "node:fs";
 import esbuild from "esbuild";
 import process from "node:process";
 
@@ -19,9 +19,6 @@ const copyPlugin = {
 		build.onEnd(() => {
 			copyFileSync("manifest.json", "dist/manifest.json");
 			copyFileSync("styles.css", "dist/styles.css");
-			mkdirSync("dist/assets/fonts", { recursive: true });
-			copyFileSync("assets/fonts/FlowCircular-Regular.ttf", "dist/assets/fonts/FlowCircular-Regular.ttf");
-			copyFileSync("assets/fonts/FlowCircular-OFL.txt", "dist/assets/fonts/FlowCircular-OFL.txt");
 		});
 	},
 };

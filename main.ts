@@ -104,12 +104,8 @@ interface InlinePreviewControlsState {
 
 interface PreviewWebviewElement extends HTMLElement {
     getWebContentsId(): number;
-    canGoBack(): boolean;
-    canGoForward(): boolean;
     executeJavaScript(code: string): Promise<unknown>;
     getURL(): string;
-    goBack(): void;
-    goForward(): void;
     canGoToOffset(offset: number): boolean;
     goToOffset(offset: number): void;
     loadURL(url: string): Promise<void>;
@@ -306,17 +302,7 @@ interface RequireHost {
     require?: (moduleName: string) => unknown;
 }
 
-interface ElectronCookie {
-    name: string;
-    value: string;
-}
-
-interface ElectronCookies {
-    get(filter: { url?: string; name?: string }): Promise<ElectronCookie[]>;
-}
-
 interface ElectronSession {
-    cookies?: ElectronCookies;
     flushStorageData?: () => Promise<void>;
 }
 
@@ -481,6 +467,10 @@ interface LegacyLinkPreviewSettings {
     modifierKey?: ModifierKeyType;
 }
 
+function hasAnyModifierSelected(keys: ModifierKeyConfig): boolean {
+    return keys.meta || keys.ctrl || keys.alt || keys.shift;
+}
+
 const DEFAULT_MODIFIER_KEYS: ModifierKeyConfig = {
     meta: false,
     ctrl: false,
@@ -574,10 +564,10 @@ export default class LinkPreviewPlugin extends Plugin {
                 const link = this.getEditorLinkAtCursor(editor, content, null);
                 if (!link) return false;
                 const view = ctx instanceof MarkdownView ? EditorView.findFromDOM(ctx.contentEl) : null;
-                if (view && this.isRangeInsideCode(view, link.start, link.end)) return false;
+                if (!view) return false;
+                if (this.isRangeInsideCode(view, link.start, link.end)) return false;
                 if (checking) return true;
 
-                if (!view) return false;
                 // Anchor on the link itself: the whole note as hover element would position the
                 // popup in the corner and make every click in the note count as a click inside it.
                 const at = view.domAtPos(link.start);
@@ -777,7 +767,7 @@ export default class LinkPreviewPlugin extends Plugin {
             // bubble listener sees it. At capture, `defaultPrevented` still distinguishes an
             // Escape a modal, suggester or palette has claimed from one nothing wants.
             scope.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
-                if (e.key !== 'Escape' || e.defaultPrevented || this.activePreview) return;
+                if (e.key !== 'Escape' || e.defaultPrevented || this.activePreview?.doc === doc) return;
                 const focused = doc.activeElement;
                 // The toolbar's address, size and zoom fields implement Escape themselves
                 // (revert and blur). Capture phase runs before their own listeners and is
@@ -2496,9 +2486,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const frameController = this.createPreviewFrame(doc, url);
         const entry: CachedPreview = { url, doc, element: previewEl, controller: frameController };
 
-        if (this.shouldShowToolbar()) {
-            this.createButtons(previewEl, frameController);
-        }
+        this.createButtons(previewEl, frameController);
 
         previewEl.setAttr('data-preview-url', url);
 
@@ -2506,7 +2494,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         wrapper.addClass('preview-scaled-viewport');
         wrapper.appendChild(frameController.element);
         const loading = wrapper.createDiv('preview-loading');
-        loading.addClass('loading-spinner');
         loading.setAttr('aria-label', 'Loading preview');
         loading.setAttr('role', 'status');
         const pageLoading = wrapper.createDiv('preview-page-loading');
@@ -2563,7 +2550,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         let clickOutsideHandler: ((e: MouseEvent) => void) | undefined;
         if (this.settings.stickyPopup) {
             clickOutsideHandler = (e: MouseEvent) => {
-                const target = e.target as Element;
+                const target = e.target;
+                if (!(target instanceof Element)) return;
                 if (!previewEl.contains(target) && !hoverElement.contains(target)) {
                     this.cleanupActivePreview();
                 }
@@ -2770,6 +2758,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     hideDockPreview(entry: CachedPreview, trim = true) {
         entry.url = this.getPreviewFrameUrl(entry.controller);
+        // A docked panel is where a user actually signs in to a site.
+        void this.flushPreviewSessionStorage();
         entry.dock = undefined;
         entry.element.removeClass('is-docked');
         entry.element.addClass('is-cached');
@@ -2921,10 +2911,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         let lastFailureNotice: string | undefined;
         const failLoading = (event: Event) => {
             if ('isMainFrame' in event && event.isMainFrame === false) return;
-            // -3 is an aborted load; -300..-302 are unknown or disallowed schemes, which a
-            // page triggers on its own when it links to a mail client or an app.
-            if ('errorCode' in event && typeof event.errorCode === 'number' &&
-                [-3, -300, -301, -302].includes(event.errorCode)) return;
+            const errorCode = 'errorCode' in event && typeof event.errorCode === 'number' ? event.errorCode : 0;
+            if (errorCode === -3) return;
+            // -300..-302 are unknown or disallowed schemes, which a page triggers on its own
+            // when it links to a mail client or an app — but only ignorable once something
+            // is on screen to fall back to.
+            if (hasRevealedInitialPage && [-300, -301, -302].includes(errorCode)) return;
             previewEl.removeClass('is-page-loading');
             if (hasRevealedInitialPage) {
                 // The previous page is still on screen, so an overlay would hide readable
@@ -2936,8 +2928,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                     window.setTimeout(() => { lastFailureNotice = undefined; }, 2000);
                     new Notice(`Could not load ${failedUrl}`);
                 }
-                // The previous page is still visible, so the toolbar keeps describing it
-                // rather than the URL that failed to commit.
+                // The previous page is still visible, so put the toolbar back on it: the
+                // address bar still holds whatever was typed or followed.
+                controller.currentUrl = this.getPreviewFrameUrl(controller);
+                previewEl.setAttr('data-preview-url', controller.currentUrl);
+                this.updatePreviewNavigationControls(previewEl, controller);
                 return;
             }
 
@@ -3197,10 +3192,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         };
     }
 
-    private hasAnyModifierSelected(keys: ModifierKeyConfig): boolean {
-        return keys.meta || keys.ctrl || keys.alt || keys.shift;
-    }
-
     async loadSettings() {
         const loaded = (await this.loadData()) as (Partial<LinkPreviewSettings> & LegacyLinkPreviewSettings) | null;
 
@@ -3229,7 +3220,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             // Fresh install, use platform default
             modifierKeys = platformDefaultKeys;
         }
-        if (!this.hasAnyModifierSelected(modifierKeys)) {
+        if (!hasAnyModifierSelected(modifierKeys)) {
             modifierKeys = platformDefaultKeys;
         }
 
@@ -3316,7 +3307,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.unloaded = true;
         this.markdownLinkMemo = undefined;
         this.bareUrlMemo = undefined;
-        this.electronSession = undefined;
         for (const doc of this.handledDocuments) {
             doc.body.removeClass('url-preview-inline-links', 'url-preview-hide-external-link-icon');
             doc.body.removeClass('url-preview-hide-loading-indicators');
@@ -3573,10 +3563,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             '--preview-frame-scale': String(scale),
             '--preview-frame-width': `${frameWidth}px`,
         });
-    }
-
-    private shouldShowToolbar(): boolean {
-        return true;
     }
 
     private setToolbarTooltip(button: HTMLElement, label: string) {
@@ -4646,7 +4632,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private async fetchPageHtml(url: string): Promise<string> {
         const response = await this.withTitleRequestTimeout(
-            requestUrl({ url, headers: this.getTitleRequestHeaders(), throw: false }));
+            requestUrl({ url, headers: this.getTitleRequestBaseHeaders(), throw: false }));
         // An error page has a title of its own; using it would write "Page not found" into the note.
         if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
         return response.text;
@@ -4655,10 +4641,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     // Deliberately anonymous. Attaching the browser session's cookies would fetch private
     // pages' titles, but `requestUrl` follows redirects and a `Cookie` header cannot be scoped
     // to an origin, so any URL in a note could carry a signed-in session to another host.
-    private getTitleRequestHeaders(): Record<string, string> {
-        return this.getTitleRequestBaseHeaders();
-    }
-
     private getTitleRequestBaseHeaders(): Record<string, string> {
         return {
             Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -4723,6 +4705,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private isUnusablePageTitle(title: string, url: string): boolean {
+        // Title requests are anonymous, so a gated page answers with 200 and its login page.
+        // Writing that title into a note is worse than reporting that none could be found.
+        const trimmed = title.trim();
+        if (/^(log ?in|sign ?in|sign ?up|register|authentication required)\b/i.test(trimmed)) return true;
+        if (/\b(log ?in|sign ?in) to continue\b/i.test(trimmed)) return true;
         if (!this.isGitHubUrl(url)) return false;
 
         return /^(sign in to github|join github|github)$/i.test(title);
@@ -4800,7 +4787,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                             .setValue(this.plugin.settings.modifierKeys[key])
                             .onChange(async (value) => {
                                 this.plugin.settings.modifierKeys[key] = value;
-                                if (!this.hasAnyModifierSelected()) {
+                                if (!hasAnyModifierSelected(this.plugin.settings.modifierKeys)) {
                                     const defaultKey = Platform.isMacOS ? 'meta' : 'ctrl';
                                     this.plugin.settings.modifierKeys[defaultKey] = true;
                                 }
@@ -4818,7 +4805,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         behaviorGroup.addSetting(setting => {
             setting
                 .setName('Sticky popup')
-                .setDesc('Keep the preview open until escape or click outside. Inside a desktop preview page, press escape twice quickly to close.')
+                .setDesc('Keep the preview open until escape or a click outside. Inside a desktop preview page, press escape twice quickly to close.')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.stickyPopup)
                     .onChange(async (value) => {
@@ -5045,11 +5032,6 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                 setting.settingEl.addClass('url-preview-setting-disabled');
             }
         });
-    }
-
-    private hasAnyModifierSelected(): boolean {
-        const keys = this.plugin.settings.modifierKeys;
-        return keys.meta || keys.ctrl || keys.alt || keys.shift;
     }
 
     private getModifierKeyDescription(key: keyof ModifierKeyConfig): string {
