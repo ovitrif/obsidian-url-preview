@@ -69,6 +69,10 @@ The side-panel toolbar button switches back to a floating preview without reload
 
 Some websites block iframe embedding and cannot be previewed. This is a browser security restriction that cannot be bypassed.
 
+## Credits
+
+The GitHub hover card's loading skeleton is drawn with a two-glyph subset of [Flow Circular](https://github.com/dharmatype/Flow) by Dan Ross, licensed under the [SIL Open Font License 1.1](https://openfontlicense.org/).
+
 ## Support
 
 If you encounter issues or have suggestions, please file them on the [GitHub repository](https://github.com/ovitrif/obsidian-url-preview/issues).
