@@ -231,8 +231,7 @@ class PreviewSidePanel {
         if (!this.host.isConnected || this.host.ownerDocument !== this.entry.doc) { this.close(); return; }
         const width = this.host.getBoundingClientRect().width;
         if (width > 0) {
-            const minimum = Math.min(SIDE_PANEL_MIN_WIDTH / width, 0.5);
-            const ratio = Math.min(1 - minimum, Math.max(minimum, this.ratio));
+            const ratio = this.clampRatio(this.ratio, width);
             // Keep the stored ratio inside the range the current window allows, so the next
             // arrow key moves the divider instead of being clamped back to where it already is.
             this.ratio = ratio;
@@ -245,10 +244,17 @@ class PreviewSidePanel {
         this.divider.setCssStyles({ left: `${rect.left - 4}px`, top: `${rect.top}px`, height: `${rect.height}px` });
     }
 
+    // Two SIDE_PANEL_MIN_WIDTH panes need twice that much room. In a note narrower than
+    // that, a 0.5 floor pins the ratio, so the divider is focusable, labelled with a live
+    // aria-valuenow, and completely inert to both the mouse and the arrow keys. A third
+    // each keeps it working; how small to go is then the user's call.
+    private clampRatio(ratio: number, width: number): number {
+        const minimum = width > 0 ? Math.min(SIDE_PANEL_MIN_WIDTH / width, 1 / 3) : 1 / 3;
+        return Math.min(1 - minimum, Math.max(minimum, ratio));
+    }
+
     private setRatio(ratio: number) {
-        const width = this.host.getBoundingClientRect().width;
-        const minimum = width > 0 ? Math.min(SIDE_PANEL_MIN_WIDTH / width, 0.5) : 0.5;
-        this.ratio = Math.min(1 - minimum, Math.max(minimum, ratio));
+        this.ratio = this.clampRatio(ratio, this.host.getBoundingClientRect().width);
         this.updateBounds();
     }
 
@@ -2499,7 +2505,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.navigatePreviewFrame(panel.controller, url);
             panel.url = url;
             panel.requestUrl = url;
-            panel.controller.resolvedUrl = undefined;
+            // `bindPreviewFrame` only stamps this on the first reveal, so clearing it here
+            // would leave the panel's frame without one for the rest of its life.
+            panel.controller.resolvedUrl = url;
         }
         panel.dock?.updateBounds();
     }
@@ -2742,7 +2750,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const url = this.getPreviewFrameUrl(entry.controller);
         const fresh = this.createCachedPreview(active.link, url);
         fresh.url = entry.url;
-        fresh.requestUrl = entry.requestUrl;
+        // The clone loads whatever is on screen. Carrying the link's URL onto a clone of a
+        // page the user browsed to would make that page answer for the link.
+        fresh.requestUrl = url === entry.controller.resolvedUrl ? entry.requestUrl : url;
         fresh.element.addClass('is-refreshing');
         // It is loading the same page behind the live one; two copies must not both be heard.
         this.setPreviewMuted(fresh, true);
@@ -2846,6 +2856,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     hideDockPreview(entry: CachedPreview, trim = true) {
         entry.url = this.getPreviewFrameUrl(entry.controller);
+        // The anchor is a note element; a cached entry must not pin a detached subtree.
+        entry.floatingAnchor = undefined;
         // A docked panel is where a user actually signs in to a site.
         void this.flushPreviewSessionStorage();
         entry.dock = undefined;
@@ -4503,8 +4515,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             const start = match.index;
             if (!this.hasBareUrlLeftBoundary(content, start)) continue;
             if (this.isBareUrlInsideOtherConstruct(content, start)) continue;
-            const text = this.trimBareUrlPunctuation(this.unwrapEmphasis(content, start, match[0]));
+            const text = this.trimBareUrlPunctuation(
+                this.unwrapEmphasis(content, start, this.trimBareUrlPunctuation(match[0])));
             const end = start + text.length;
+            // `<https://example.com>` is an autolink: rewriting it as `<[Title](url)>` leaves
+            // literal angle brackets in the note. CodeMirror still marks it `.cm-url`, so it
+            // keeps its preview; only the offer to rewrite it goes away.
+            if (content[start - 1] === '<' && content[end] === '>') continue;
             if (excludedRanges.some((range) => start >= range.start && end <= range.end)) continue;
 
             const url = this.normalizeUrl(text);
@@ -4556,14 +4573,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const line = content.slice(lineStart, start);
         // `[^1]: https://…` is a footnote whose body is an ordinary link, not a definition.
         if (/^\s{0,3}\[(?!\^)[^\]]*\]:\s*$/.test(line)) return true;
-        return /<[^<>]*=\s*["']?$/.test(line);
+        return /<[a-zA-Z][^<>]*\s[a-zA-Z][a-zA-Z0-9-]*\s*=\s*["']?$/.test(line);
     }
 
     // '**url**' and its siblings close with the marker they opened with, which the trailing
     // trim cannot know about: 'https://github.com/search?q=foo*' legitimately ends in one.
     private unwrapEmphasis(content: string, start: number, candidate: string): string {
-        const opener = content.slice(Math.max(0, start - 2), start);
-        for (const marker of ['**', '~~', '__', '*', '`', '~', '_']) {
+        const opener = content.slice(Math.max(0, start - 3), start);
+        for (const marker of ['***', '**', '~~', '__', '*', '`', '~', '_']) {
             if (opener.endsWith(marker) && candidate.endsWith(marker)) {
                 return candidate.slice(0, -marker.length);
             }
@@ -4576,7 +4593,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private isInsideWikilink(content: string, start: number): boolean {
         const lineStart = content.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
         const line = content.slice(lineStart, start);
-        return line.lastIndexOf('[[') > line.lastIndexOf(']]');
+        const opened = line.lastIndexOf('[[');
+        if (opened < 0 || opened < line.lastIndexOf(']]')) return false;
+        // A stray '[[' that something already closed with a single ']' is not a wikilink
+        // around this match, and suppressing the rest of the line would be wrong.
+        return !line.slice(opened + 2).includes(']');
     }
 
     private trimBareUrlPunctuation(candidate: string): string {
