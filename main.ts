@@ -116,6 +116,7 @@ type PreviewFrameElement = HTMLIFrameElement | PreviewWebviewElement;
 
 interface PreviewFrameController {
     cleanupKeyboard?: () => void;
+    muted?: boolean;
     currentUrl: string;
     element: PreviewFrameElement;
     fallbackHistory: string[];
@@ -322,8 +323,10 @@ const MIN_PREVIEW_HEIGHT = 150;
 
 // A hand-edited or half-typed size must never shrink a preview to nothing.
 function sanitizePreviewSize(persisted: number | undefined, configured: number, fallback: number, minimum: number): number {
-    for (const candidate of [persisted, configured, fallback]) {
-        // A small setting is honoured up to the minimum; only a missing or nonsense one falls through.
+    // A persisted size below the minimum can only come from a corrupt file, so it is skipped
+    // rather than clamped; a configured one is the user's choice and is clamped up.
+    if (typeof persisted === 'number' && Number.isFinite(persisted) && persisted >= minimum) return persisted;
+    for (const candidate of [configured, fallback]) {
         if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0) {
             return Math.max(candidate, minimum);
         }
@@ -517,7 +520,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private documentScopes = new Map<Document, Component>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
     private lastPreviewChromeSignature: string | undefined;
-    private previewRequest = 0;
+    previewRequest = 0;
     private unloaded = false;
     private editorLinkCache = new WeakMap<EditorView, { doc: unknown; links: ParsedMarkdownLink[] }>();
 
@@ -596,6 +599,7 @@ export default class LinkPreviewPlugin extends Plugin {
                         !update.docChanged &&
                         !update.geometryChanged &&
                         !update.viewportChanged &&
+                        syntaxTree(update.startState) === syntaxTree(update.state) &&
                         this.version === version
                     ) return;
 
@@ -2411,6 +2415,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private activateCachedPreview(entry: CachedPreview, link: HTMLElement, hoverElement: HTMLElement, sourceKey?: string,
         bounds?: { left: number; top: number; width: number; height: number }) {
         const { element: previewEl, doc } = entry;
+        // Register first: cleanupActivePreview sweeps popups that are not in the cache,
+        // and a freshly created entry is in the document before it is in the map.
+        this.previewCache.delete(previewEl);
+        this.previewCache.set(previewEl, entry);
         if (this.activePreview && this.activePreview.element !== previewEl) {
             this.cleanupActivePreview();
         }
@@ -2425,8 +2433,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 width: win.innerWidth, height: win.innerHeight,
             }));
         }
-        this.previewCache.delete(previewEl);
-        this.previewCache.set(previewEl, entry);
 
         // Add click-outside handler for sticky popup mode
         let clickOutsideHandler: ((e: MouseEvent) => void) | undefined;
@@ -2481,10 +2487,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     setPreviewMuted(entry: CachedPreview, muted: boolean) {
         const frame = entry.controller.element;
         if (!this.isPreviewWebview(frame)) return;
+        // A guest that has not reached dom-ready rejects this, so remember the intent
+        // and let the dom-ready handler apply it once the page can make a sound.
+        entry.controller.muted = muted;
         try {
             frame.setAudioMuted(muted);
         } catch {
-            // The guest is not attached yet, so it has nothing to play.
+            // Applied on dom-ready instead.
         }
     }
 
@@ -2635,6 +2644,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     hideDockPreview(entry: CachedPreview, trim = true) {
+        // Anything still waiting on this panel asked for the panel, not a popup.
+        this.previewRequest++;
         entry.url = this.getPreviewFrameUrl(entry.controller);
         entry.dock = undefined;
         entry.element.removeClass('is-docked');
@@ -2789,6 +2800,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (this.isPreviewWebview(frame)) {
             frame.addEventListener('dom-ready', () => {
                 controller.isReady = true;
+                if (controller.muted !== undefined) {
+                    try {
+                        frame.setAudioMuted(controller.muted);
+                    } catch {
+                        // Nothing to mute on a guest that never attached.
+                    }
+                }
                 void this.executeInPreview(frame, `
                     window.__urlPreviewEdited = false;
                     document.addEventListener('input', () => { window.__urlPreviewEdited = true; }, true);
@@ -3085,7 +3103,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (removedObsoleteField) {
             await this.saveSettings();
         }
-            this.lastPreviewChromeSignature = this.previewChromeSignature();
+        this.lastPreviewChromeSignature = this.previewChromeSignature();
     }
 
     async saveSettings() {
@@ -4718,8 +4736,10 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setValue(String(this.plugin.settings.maxPreviewHeight))
                         .onChange(async (value) => {
                             const height = Number(value);
-                            if (!Number.isFinite(height) || height < MIN_PREVIEW_HEIGHT) return;
-                            this.plugin.settings.maxPreviewHeight = height;
+                            if (!value.trim() || !Number.isFinite(height)) return;
+                            const clamped = Math.max(MIN_PREVIEW_HEIGHT, Math.round(height));
+                            if (String(clamped) !== value) text.setValue(String(clamped));
+                            this.plugin.settings.maxPreviewHeight = clamped;
                             this.plugin.settings.persistedWidth = undefined;
                             this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();
@@ -4734,8 +4754,10 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setValue(String(this.plugin.settings.maxPreviewWidth))
                         .onChange(async (value) => {
                             const width = Number(value);
-                            if (!Number.isFinite(width) || width < MIN_PREVIEW_WIDTH) return;
-                            this.plugin.settings.maxPreviewWidth = width;
+                            if (!value.trim() || !Number.isFinite(width)) return;
+                            const clamped = Math.max(MIN_PREVIEW_WIDTH, Math.round(width));
+                            if (String(clamped) !== value) text.setValue(String(clamped));
+                            this.plugin.settings.maxPreviewWidth = clamped;
                             this.plugin.settings.persistedWidth = undefined;
                             this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();

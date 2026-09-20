@@ -844,9 +844,9 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
     }
 
     .url-preview-github-hover-card,
-    .url-preview-github-hover-card-copy,
-    .preview-page-loading,
-    .url-preview-divider::after {
+    .url-preview-github-hover-card-copy-icon,
+    .preview-loading,
+    .hover-popup::after {
         transition: none;
     }
 }
