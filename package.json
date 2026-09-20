@@ -10,7 +10,12 @@
 		"lint:fix": "eslint . --fix",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
-	"keywords": ["obsidian", "obsidian-plugin", "obsidian-url-preview", "url-preview"],
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin",
+		"obsidian-url-preview",
+		"url-preview"
+	],
 	"author": "ovitrif",
 	"license": "MIT",
 	"devDependencies": {
@@ -25,6 +30,7 @@
 		"typescript-eslint": "^8.35.1"
 	},
 	"dependencies": {
+		"@codemirror/language": "^6.12.4",
 		"@codemirror/view": "^6.38.6"
 	}
 }

@@ -5,6 +5,7 @@ import {
     WidgetType,
 } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
+import { syntaxTree } from '@codemirror/language';
 import {
     App,
     Editor,
@@ -534,8 +535,26 @@ export default class LinkPreviewPlugin extends Plugin {
         );
     }
 
+    // A URL written inside code is documentation, not a link: it gets no badge and no preview.
+    private isRangeInsideCode(view: EditorView, from: number, to: number): boolean {
+        let insideCode = false;
+        syntaxTree(view.state).iterate({
+            from,
+            to: Math.max(from + 1, to),
+            enter: (node) => {
+                if (insideCode) return false;
+                if (/(^|[-_])(inline-code|codeblock|comment)/i.test(node.name)) {
+                    insideCode = true;
+                    return false;
+                }
+            },
+        });
+        return insideCode;
+    }
+
     private buildGitHubPullRequestBadgeDecorations(view: EditorView): DecorationSet {
-        const links = this.parseEditorLinks(view.state.doc.toString());
+        const links = this.parseEditorLinks(view.state.doc.toString())
+            .filter((link) => !this.isRangeInsideCode(view, link.start, link.end));
 
         return Decoration.set(
             links.flatMap((link) => {
@@ -2392,11 +2411,26 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.applyPreviewViewportProps(fresh.element, url);
         let cancelled = false;
         const win = entry.doc.defaultView ?? window;
+        const onFailLoad = (event: Event) => {
+            if ('isMainFrame' in event && event.isMainFrame === false) return;
+            if ('errorCode' in event && event.errorCode === -3) return;
+            cancel();
+        };
+        const onNavigate = (event: Event) => {
+            if ('httpResponseCode' in event && typeof event.httpResponseCode === 'number' && event.httpResponseCode >= 400) cancel();
+        };
+        // Keeping these removable matters: on the success path `fresh` becomes the live entry,
+        // so a listener left behind would pin the replaced preview and its document forever.
+        const detachRefreshListeners = () => {
+            fresh.controller.element.removeEventListener('did-fail-load', onFailLoad);
+            fresh.controller.element.removeEventListener('did-navigate', onNavigate);
+        };
         const cancel = () => {
             if (cancelled) return;
             cancelled = true;
             win.clearTimeout(timeout);
             observer.disconnect();
+            detachRefreshListeners();
             this.disposeCachedPreview(fresh);
             entry.cancelRefresh = undefined;
         };
@@ -2436,6 +2470,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                     latest.x !== state.x || latest.y !== state.y || this.getPreviewFrameUrl(entry.controller) !== url) { cancel(); return; }
                 observer.disconnect();
                 win.clearTimeout(timeout);
+                detachRefreshListeners();
                 cancelled = true;
                 entry.cancelRefresh = undefined;
                 this.cleanupActivePreview();
@@ -2446,14 +2481,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         };
         const timeout = win.setTimeout(cancel, 30000);
         entry.cancelRefresh = cancel;
-        fresh.controller.element.addEventListener('did-fail-load', event => {
-            if ('isMainFrame' in event && event.isMainFrame === false) return;
-            if ('errorCode' in event && event.errorCode === -3) return;
-            cancel();
-        });
-        fresh.controller.element.addEventListener('did-navigate', event => {
-            if ('httpResponseCode' in event && typeof event.httpResponseCode === 'number' && event.httpResponseCode >= 400) cancel();
-        });
+        fresh.controller.element.addEventListener('did-fail-load', onFailLoad);
+        fresh.controller.element.addEventListener('did-navigate', onNavigate);
         observer.observe(fresh.element, { subtree: true, attributes: true, attributeFilter: ['class'] });
     }
 
@@ -3826,6 +3855,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const pointLink = point ? this.getMarkdownLinkAtPoint(editorView, content, point) : null;
 
         if (pointLink) {
+            if (this.isRangeInsideCode(editorView, pointLink.start, pointLink.end)) return null;
             return {
                 editorView,
                 element: linkTarget,
@@ -3837,7 +3867,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
 
         const textLink = this.getMarkdownLinkByDisplayText(content, linkTarget);
-        if (textLink) {
+        if (textLink && !this.isRangeInsideCode(editorView, textLink.start, textLink.end)) {
             return {
                 element: linkTarget,
                 hoverElement: linkTarget,
@@ -3882,28 +3912,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const displayText = element.textContent?.trim();
         if (!displayText) return null;
 
-        let substringMatch: ParsedMarkdownLink | null = null;
-
         for (const link of this.parseMarkdownLinks(content)) {
-            const linkText = link.text.trim();
-
-            // Exact match — return immediately
-            if (linkText === displayText) {
+            if (link.text.trim() === displayText) {
                 return link;
             }
-
-            // Substring match — remember first one, but keep looking for exact
-            if (!substringMatch &&
-                (linkText.includes(displayText) || displayText.includes(linkText))) {
-                substringMatch = link;
-            }
         }
 
-        // No exact match found — use substring match if any
-        if (substringMatch) {
-            return substringMatch;
-        }
-
+        // A substring match used to be accepted here, which let a wikilink such as [[Design]]
+        // resolve to an unrelated [Design docs](…) elsewhere in the note.
         return this.getBareMarkdownUrl(displayText);
     }
 
