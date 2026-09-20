@@ -2866,6 +2866,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             revealContent();
             void this.flushPreviewSessionStorage();
         };
+        let lastFailureNotice: string | undefined;
         const failLoading = (event: Event) => {
             if ('isMainFrame' in event && event.isMainFrame === false) return;
             if ('errorCode' in event && event.errorCode === -3) return;
@@ -2874,7 +2875,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 // The previous page is still on screen, so an overlay would hide readable
                 // content; say what failed instead of leaving the user with a silent no-op.
                 const failedUrl = this.getPreviewNavigationEventUrl(event) ?? controller.currentUrl;
-                new Notice(`Could not load ${failedUrl}`);
+                // One dead host reports twice, for the provisional load and for the error page.
+                if (lastFailureNotice !== failedUrl) {
+                    lastFailureNotice = failedUrl;
+                    window.setTimeout(() => { lastFailureNotice = undefined; }, 2000);
+                    new Notice(`Could not load ${failedUrl}`);
+                }
                 this.updatePreviewNavigationControls(previewEl, controller);
                 return;
             }
