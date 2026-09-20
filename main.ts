@@ -4810,7 +4810,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     // length: on a maths-heavy note that reached 40 ms per keystroke at 56 KB.
     private findClosingBracket(content: string, start: number): number {
         let depth = 0;
-        const limit = this.linkScanLimit(content, start, LinkPreviewPlugin.MAX_LINK_TEXT);
+        const limit = Math.min(content.length, start + LinkPreviewPlugin.MAX_LINK_TEXT);
 
         for (let index = start; index < limit; index++) {
             const char = content[index];
@@ -4819,6 +4819,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 index++;
                 continue;
             }
+
+            if (char === '\n' && content[index + 1] === '\n') return -1;
 
             if (char === '[') {
                 depth++;
@@ -4837,18 +4839,17 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     // written with single newlines has no paragraph break to stop at. The two halves get
     // very different caps — link text is never long, but a share URL can carry thousands
     // of characters of payload in its fragment, and this vault has two of them.
+    //
+    // The blank line is found inside the scan rather than by an `indexOf` beforehand. That
+    // lookup was itself unbounded, and it ran for every `[` in the note — so a long run
+    // without a blank line, which is what a checkbox list or a table is, was quadratic all
+    // over again: an 82 KB list of tasks cost 20 ms per keystroke and a 166 KB one 52 ms.
     private static readonly MAX_LINK_TEXT = 1024;
     private static readonly MAX_LINK_DESTINATION = 16384;
 
-    private linkScanLimit(content: string, start: number, span: number): number {
-        const blankLine = content.indexOf('\n\n', start);
-        const paragraphEnd = blankLine === -1 ? content.length : blankLine;
-        return Math.min(paragraphEnd, start + span);
-    }
-
     private findClosingParen(content: string, start: number): number {
         let depth = 0;
-        const limit = this.linkScanLimit(content, start, LinkPreviewPlugin.MAX_LINK_DESTINATION);
+        const limit = Math.min(content.length, start + LinkPreviewPlugin.MAX_LINK_DESTINATION);
 
         for (let index = start; index < limit; index++) {
             const char = content[index];
@@ -4857,6 +4858,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 index++;
                 continue;
             }
+
+            if (char === '\n' && content[index + 1] === '\n') return -1;
 
             if (char === '(') {
                 depth++;
