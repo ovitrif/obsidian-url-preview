@@ -3733,7 +3733,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
                 const entry = this.previewCache.get(container);
                 if (entry?.restoreBounds) {
-                    this.applyPreviewBounds(container, entry.restoreBounds);
+                    // The box was captured in viewport coordinates before the expand. If the
+                    // window shrank in between, restoring it verbatim puts the popup off
+                    // screen with nothing left to grab.
+                    this.applyPreviewBounds(container, this.clampBoundsToWindow(container, entry.restoreBounds));
                     entry.restoreBounds = undefined;
                     this.updateExpandButton(container, false);
                     return;
@@ -4108,6 +4111,19 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             top: margin,
             width: Math.max(MIN_PREVIEW_WIDTH, win.innerWidth - margin * 2),
             height: Math.max(MIN_PREVIEW_HEIGHT, win.innerHeight - margin * 2),
+        };
+    }
+
+    private clampBoundsToWindow(previewEl: HTMLElement, bounds: { left: number, top: number, width: number, height: number }) {
+        const win = previewEl.ownerDocument.defaultView ?? window;
+        const margin = 5;
+        const width = Math.min(Math.max(MIN_PREVIEW_WIDTH, bounds.width), Math.max(MIN_PREVIEW_WIDTH, win.innerWidth - margin * 2));
+        const height = Math.min(Math.max(MIN_PREVIEW_HEIGHT, bounds.height), Math.max(MIN_PREVIEW_HEIGHT, win.innerHeight - margin * 2));
+        return {
+            left: Math.min(Math.max(margin, bounds.left), Math.max(margin, win.innerWidth - width - margin)),
+            top: Math.min(Math.max(margin, bounds.top), Math.max(margin, win.innerHeight - height - margin)),
+            width,
+            height,
         };
     }
 
