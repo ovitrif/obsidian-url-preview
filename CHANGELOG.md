@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Badge decorations are built from a cached parse and only for the visible part of the note.
 - The embedded skeleton font is subset to the two characters it draws, taking `styles.css` from 82 KB to 26 KB.
 - Escape closes a docked side panel when the panel, its divider or nothing holds focus — including right after docking with the toolbar button — and leaves the key to the toolbar's own fields and to the note.
-- Escape closes a floating preview only when nothing else has claimed that keystroke, so dismissing a modal or the command palette no longer closes the preview with it. With Vim key bindings on, an Escape typed in the editor leaves insert mode and a second one closes the preview.
+- Escape closes a floating preview only when nothing else has claimed that keystroke, so dismissing a modal or the command palette no longer closes the preview with it. With Vim key bindings on, an Escape typed in the editor leaves insert mode and the next one closes the preview; anything typed in between starts over.
 - **Preview link at cursor** moves focus into the preview and gives it back to the editor when the preview closes.
 - A preview is found again by the URL the link asked for as well as by the page it ended up on, so a link that redirects reuses its preview instead of opening a second one.
 - Page-title requests stay anonymous and time out after ten seconds.
@@ -70,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Escape in the zoom box committed the typed value instead of reverting it.
 - Releasing a resize drag past the window edge closed the preview, and restoring an expanded preview after shrinking the window put it off screen.
 - A preview refreshed in the background handed focus back to the note while staying open.
+- A backslash written immediately before a blank line made the plugin treat two paragraphs as one link, and converting that link deleted the paragraph break and everything between.
 
 ## [0.8.0] - 2026-09-08
 
