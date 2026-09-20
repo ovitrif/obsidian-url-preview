@@ -122,7 +122,10 @@ body.url-preview-hide-loading-indicators .preview-iframe-wrapper .preview-frame 
     justify-content: flex-end;
     gap: 2px;
     z-index: 3;
-    padding: 4px;
+    /* The 8px resize bands run down the popup's left and right edges and hit-test above
+       this toolbar, so the controls are inset past them horizontally; otherwise the close
+       button's corner started a diagonal resize instead of closing the preview. */
+    padding: 4px 8px;
     background: var(--background-primary);
     border-bottom: 1px solid var(--background-modifier-border);
 }
@@ -780,8 +783,9 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
 .hover-popup > .resize-handle-e { right: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 
 /* Corner handles — sit above edges for diagonal cursor */
-.hover-popup > .resize-handle-nw { top: 0; left: 0; width: 16px; height: 16px; z-index: 3; cursor: nwse-resize; }
-.hover-popup > .resize-handle-ne { top: 0; right: 0; width: 16px; height: 16px; z-index: 3; cursor: nesw-resize; }
+/* The top corners are kept to the toolbar's padding so they never cover a control. */
+.hover-popup > .resize-handle-nw { top: 0; left: 0; width: 8px; height: 8px; z-index: 3; cursor: nwse-resize; }
+.hover-popup > .resize-handle-ne { top: 0; right: 0; width: 8px; height: 8px; z-index: 3; cursor: nesw-resize; }
 .hover-popup > .resize-handle-sw { bottom: 0; left: 0; width: 16px; height: 16px; z-index: 3; cursor: nesw-resize; }
 .hover-popup > .resize-handle-se { bottom: 0; right: 0; width: 16px; height: 16px; z-index: 3; cursor: nwse-resize; }
 

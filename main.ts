@@ -2442,8 +2442,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (previous instanceof HTMLElement) active.returnFocusTo = previous;
         active.element.tabIndex = -1;
         active.element.focus({ preventScroll: true });
-        const firstControl = active.element.querySelector<HTMLElement>('.preview-buttons button:not(:disabled)');
-        firstControl?.focus({ preventScroll: true });
+        // The address bar is the safe landing spot: the first enabled button is the pin,
+        // where a stray Space would flip a setting for every preview.
+        const target = active.element.querySelector<HTMLElement>('.preview-address-input')
+            ?? active.element.querySelector<HTMLElement>('.preview-buttons button:not(:disabled)');
+        target?.focus({ preventScroll: true });
     }
 
     private openPreviewForLink(linkInfo: LinkInfo) {
@@ -3053,6 +3056,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             loading.removeClass('is-hidden');
         };
         const updateNavigation = (event?: Event) => {
+            // A subframe's hash or pushState navigation would otherwise overwrite the
+            // preview's URL, which drives the address bar and the per-domain zoom.
+            if (event && 'isMainFrame' in event && event.isMainFrame === false) return;
             const eventUrl = event ? this.getPreviewNavigationEventUrl(event) : null;
             const currentUrl = eventUrl ?? this.getPreviewFrameUrl(controller);
             if (currentUrl) {
@@ -3077,6 +3083,26 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 void this.executeInPreview(frame, `
                     window.__urlPreviewEdited = false;
                     document.addEventListener('input', () => { window.__urlPreviewEdited = true; }, true);
+                    // A <webview> without allowpopups drops window.open on the floor, so a
+                    // target="_blank" link — most links on a docs site or a search page —
+                    // did nothing at all. Follow it in the preview instead. The listener is
+                    // on the bubble phase and respects defaultPrevented, so a page that
+                    // routes its own clicks keeps doing so.
+                    if (!window.__urlPreviewBlankHook) {
+                        window.__urlPreviewBlankHook = true;
+                        document.addEventListener('click', (event) => {
+                            if (event.defaultPrevented || event.button !== 0) return;
+                            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                            const target = event.target;
+                            if (!(target instanceof Element)) return;
+                            const anchor = target.closest('a[target=_blank], a[target=_new]');
+                            if (!(anchor instanceof HTMLAnchorElement)) return;
+                            const href = anchor.href;
+                            if (!/^https?:/i.test(href)) return;
+                            event.preventDefault();
+                            location.href = href;
+                        });
+                    }
                 `).catch(() => undefined);
                 this.bindPreviewEscape(previewEl, controller);
                 updateNavigation();
@@ -3389,6 +3415,20 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         await write;
         if (this.unloaded) return;
         for (const doc of this.handledDocuments) this.applyDisplaySettings(doc);
+        this.refreshPreviewPinButtons();
+    }
+
+    // The pin reads a global setting, so a change made in the settings tab or from another
+    // preview has to reach every popup that is already built, not just the one clicked.
+    private refreshPreviewPinButtons() {
+        const isPinned = this.settings.persistResize;
+        for (const entry of this.previewCache.values()) {
+            const pin = entry.element.querySelector<HTMLElement>('.preview-size-pin-button');
+            if (!pin) continue;
+            setIcon(pin, isPinned ? 'pin' : 'pin-off');
+            this.setToolbarTooltip(pin, isPinned ? 'Forget preview size' : 'Remember preview size');
+            pin.toggleClass('is-active', isPinned);
+        }
     }
 
     private applyDisplaySettings(doc: Document) {
@@ -4021,6 +4061,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 applyInputZoom();
                 zoomInput.blur();
             }
+            // Without this the typed value survived Escape and was committed on blur, which
+            // is the opposite of what the address and size fields do.
+            if (event.key === 'Escape') {
+                updateZoomInput();
+                zoomInput.blur();
+            }
         });
 
         const zoomOutBtn = zoomControls.createEl('button', { cls: 'clickable-icon preview-zoom-button' });
@@ -4242,11 +4288,19 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             });
         };
 
-        const onMouseUp = () => {
+        // Losing the window mid-drag delivers no mouseup, which used to leave the popup in
+        // is-resizing with the size indicator floating over the note until the next click.
+        // The divider's drag already guards this; the handles now do too.
+        const detach = () => {
             previewEl.removeClass('is-resizing');
             doc.removeEventListener('mousemove', onMouseMove);
             doc.removeEventListener('mouseup', onMouseUp);
+            win.removeEventListener('blur', onMouseUp);
             indicator.remove();
+        };
+
+        const onMouseUp = () => {
+            detach();
             this.activeResizeCleanup = undefined;
 
             if (this.settings.persistResize) {
@@ -4254,15 +4308,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             }
         };
 
-        this.activeResizeCleanup = () => {
-            previewEl.removeClass('is-resizing');
-            doc.removeEventListener('mousemove', onMouseMove);
-            doc.removeEventListener('mouseup', onMouseUp);
-            indicator.remove();
-        };
+        this.activeResizeCleanup = detach;
 
         doc.addEventListener('mousemove', onMouseMove);
         doc.addEventListener('mouseup', onMouseUp);
+        win.addEventListener('blur', onMouseUp);
     }
 
     private calculatePreviewBounds(rect: DOMRect, windowSize: { width: number, height: number }): {
