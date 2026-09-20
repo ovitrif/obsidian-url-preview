@@ -245,7 +245,13 @@ class PreviewSidePanel {
 
     close(trim = true) {
         this.closing = true;
-        if (this.saveTimer !== undefined) (this.entry.doc.defaultView ?? window).clearTimeout(this.saveTimer);
+        if (this.saveTimer !== undefined) {
+            // Flush rather than drop it: a drag that ended moments ago is a deliberate choice.
+            (this.entry.doc.defaultView ?? window).clearTimeout(this.saveTimer);
+            this.saveTimer = undefined;
+            this.plugin.settings.sidePanelRatio = this.ratio;
+            void this.plugin.saveSettings();
+        }
         this.stopDrag?.();
         this.observer.disconnect();
         this.divider.remove();
@@ -317,7 +323,10 @@ const MIN_PREVIEW_HEIGHT = 150;
 // A hand-edited or half-typed size must never shrink a preview to nothing.
 function sanitizePreviewSize(persisted: number | undefined, configured: number, fallback: number, minimum: number): number {
     for (const candidate of [persisted, configured, fallback]) {
-        if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= minimum) return candidate;
+        // A small setting is honoured up to the minimum; only a missing or nonsense one falls through.
+        if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0) {
+            return Math.max(candidate, minimum);
+        }
     }
     return minimum;
 }
@@ -508,7 +517,9 @@ export default class LinkPreviewPlugin extends Plugin {
     private documentScopes = new Map<Document, Component>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
     private lastPreviewChromeSignature: string | undefined;
-    private editorLinkCache?: { doc: unknown; links: ParsedMarkdownLink[] };
+    private previewRequest = 0;
+    private unloaded = false;
+    private editorLinkCache = new WeakMap<EditorView, { doc: unknown; links: ParsedMarkdownLink[] }>();
 
     async onload() {
         await this.loadSettings();
@@ -519,6 +530,9 @@ export default class LinkPreviewPlugin extends Plugin {
         
         // Defer setup until layout is ready
         this.app.workspace.onLayoutReady(() => {
+            // onLayoutReady is a workspace queue, not a component registration, so it can
+            // still fire for a plugin that was disabled before the layout settled.
+            if (this.unloaded) return;
             this.registerGlobalHandler();
         });
 
@@ -543,6 +557,8 @@ export default class LinkPreviewPlugin extends Plugin {
                 const content = editor.getValue();
                 const link = this.getEditorLinkAtCursor(editor, content, null);
                 if (!link) return false;
+                const view = ctx instanceof MarkdownView ? EditorView.findFromDOM(ctx.contentEl) : null;
+                if (view && this.isRangeInsideCode(view, link.start, link.end)) return false;
                 if (checking) return true;
 
                 const anchor = ctx instanceof MarkdownView ? ctx.contentEl : undefined;
@@ -615,9 +631,10 @@ export default class LinkPreviewPlugin extends Plugin {
     // so its identity is a safe cache key.
     private parseEditorLinksForDocument(view: EditorView): ParsedMarkdownLink[] {
         const doc = view.state.doc;
-        if (this.editorLinkCache?.doc === doc) return this.editorLinkCache.links;
+        const cached = this.editorLinkCache.get(view);
+        if (cached?.doc === doc) return cached.links;
         const links = this.parseEditorLinks(doc.toString());
-        this.editorLinkCache = { doc, links };
+        this.editorLinkCache.set(view, { doc, links });
         return links;
     }
 
@@ -2294,6 +2311,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         this.cleanupActivePreview();
+        const request = ++this.previewRequest;
         const doc = link.ownerDocument;
         // Only a visible panel that owns this link reuses itself; otherwise the click would
         // retarget a panel the user cannot see, or one parked over a different note.
@@ -2301,13 +2319,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             entry.doc === doc && entry.dock && !entry.element.hasClass('is-cached') &&
             entry.dock.host.contains(link));
         if (sidePanel) {
-            void this.showPreviewInSidePanel(sidePanel, link, url, hoverElement, sourceKey);
+            void this.showPreviewInSidePanel(request, sidePanel, link, url, hoverElement, sourceKey);
             return;
         }
         this.showFloatingPreview(link, url, hoverElement, sourceKey);
     }
 
-    private async showPreviewInSidePanel(panel: CachedPreview, link: HTMLElement, url: string,
+    private async showPreviewInSidePanel(request: number, panel: CachedPreview, link: HTMLElement, url: string,
         hoverElement: HTMLElement, sourceKey?: string) {
         if (this.getPreviewFrameUrl(panel.controller) !== url) {
             let dirty = false;
@@ -2316,6 +2334,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             } catch {
                 // A page that cannot report its state has nothing to lose.
             }
+            // Reading the panel's state is a round trip to the guest, so a second click can
+            // land while this one is still waiting. The newest click owns the preview.
+            if (request !== this.previewRequest) return;
             if (!panel.dock || !panel.element.isConnected) {
                 this.showFloatingPreview(link, url, hoverElement, sourceKey);
                 return;
@@ -2390,6 +2411,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private activateCachedPreview(entry: CachedPreview, link: HTMLElement, hoverElement: HTMLElement, sourceKey?: string,
         bounds?: { left: number; top: number; width: number; height: number }) {
         const { element: previewEl, doc } = entry;
+        if (this.activePreview && this.activePreview.element !== previewEl) {
+            this.cleanupActivePreview();
+        }
         previewEl.removeClass('is-cached', 'is-refreshing', 'is-docked');
         this.setPreviewMuted(entry, false);
         this.clearCacheExpiry(entry);
@@ -2467,8 +2491,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private disposeCachedPreview(entry: CachedPreview) {
         // Remove first so closing the panel cannot evict this entry recursively.
         this.previewCache.delete(entry.element);
-        this.clearCacheExpiry(entry);
-        if (this.activePreview?.element === entry.element || entry.element.hasClass('is-resizing')) {
+        if (this.activePreview?.element === entry.element) {
+            this.cleanupActivePreview();
+        } else if (entry.element.hasClass('is-resizing')) {
             this.activeResizeCleanup?.();
             this.activeResizeCleanup = undefined;
         }
@@ -2476,6 +2501,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         entry.cancelRefresh?.();
         entry.controller.cleanupKeyboard?.();
         entry.element.remove();
+        // Last: closing the dock goes through hideDockPreview, which re-arms the timer.
+        this.clearCacheExpiry(entry);
         this.previewCache.delete(entry.element);
     }
 
@@ -2525,6 +2552,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const fresh = this.createCachedPreview(active.link, url);
         fresh.url = entry.url;
         fresh.element.addClass('is-refreshing');
+        // It is loading the same page behind the live one; two copies must not both be heard.
+        this.setPreviewMuted(fresh, true);
         const bounds = entry.element.getBoundingClientRect();
         this.applyPreviewBounds(fresh.element, { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height });
         this.applyPreviewViewportProps(fresh.element, url);
@@ -2620,8 +2649,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const rect = host.getBoundingClientRect();
         const page = content.getBoundingClientRect();
         const hidden = rect.width === 0 || page.height === 0;
-        entry.element.toggleClass('is-cached', hidden);
-        this.setPreviewMuted(entry, hidden);
+        if (entry.element.hasClass('is-cached') !== hidden) {
+            entry.element.toggleClass('is-cached', hidden);
+            this.setPreviewMuted(entry, hidden);
+        }
         this.applyPreviewBounds(entry.element, { left: page.right, top: page.top, width: Math.max(0, rect.right - page.right), height: page.height });
         this.applyPreviewViewportProps(entry.element, entry.controller.currentUrl);
     }
@@ -3017,6 +3048,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.settings = {
             ...DEFAULT_SETTINGS,
             ...loaded,
+            maxPreviewWidth: sanitizePreviewSize(undefined, loaded?.maxPreviewWidth as number,
+                DEFAULT_SETTINGS.maxPreviewWidth, MIN_PREVIEW_WIDTH),
+            maxPreviewHeight: sanitizePreviewSize(undefined, loaded?.maxPreviewHeight as number,
+                DEFAULT_SETTINGS.maxPreviewHeight, MIN_PREVIEW_HEIGHT),
             domainZoomLevels: { ...loaded?.domainZoomLevels },
             modifierKeys,
         };
@@ -3050,10 +3085,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (removedObsoleteField) {
             await this.saveSettings();
         }
+            this.lastPreviewChromeSignature = this.previewChromeSignature();
     }
 
     async saveSettings() {
         await this.saveData(this.settings);
+        if (this.unloaded) return;
         // Toolbar buttons and resize handles are built once per preview, so a cached page
         // would keep the old chrome until it aged out. Drop the idle ones instead.
         const chrome = this.previewChromeSignature();
@@ -3080,6 +3117,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     onunload() {
+        this.unloaded = true;
         for (const doc of this.handledDocuments) {
             doc.body.removeClass('url-preview-inline-links', 'url-preview-hide-external-link-icon');
             doc.body.removeClass('url-preview-hide-loading-indicators');
@@ -3090,6 +3128,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             try {
                 this.disposeCachedPreview(entry);
             } catch {
+                entry.cancelRefresh?.();
+                entry.controller.cleanupKeyboard?.();
+                this.clearCacheExpiry(entry);
                 entry.element.remove();
             }
         }
@@ -3738,8 +3779,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const height = rect.height > 0 ? rect.height : dataHeight;
 
         return {
-            width: Math.round(Number.isFinite(width) && width > 0 ? width : this.settings.maxPreviewWidth),
-            height: Math.round(Number.isFinite(height) && height > 0 ? height : this.settings.maxPreviewHeight),
+            width: Math.round(Number.isFinite(width) && width > 0
+                ? width
+                : sanitizePreviewSize(undefined, this.settings.maxPreviewWidth, DEFAULT_SETTINGS.maxPreviewWidth, MIN_PREVIEW_WIDTH)),
+            height: Math.round(Number.isFinite(height) && height > 0
+                ? height
+                : sanitizePreviewSize(undefined, this.settings.maxPreviewHeight, DEFAULT_SETTINGS.maxPreviewHeight, MIN_PREVIEW_HEIGHT)),
         };
     }
 
@@ -3936,6 +3981,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         let top = showAbove ? 
             Math.max(margin, rect.top - maxHeight - margin) : 
             Math.min(rect.bottom + margin, windowSize.height - maxHeight - margin);
+        top = Math.max(margin, top);
 
         // Calculate horizontal position
         let left = rect.left;
@@ -4016,6 +4062,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 url: pointLink.url,
             };
         }
+
+        // Matching by display text would let [[Design]] resolve to a same-titled external link.
+        if (linkTarget.hasAttribute('data-href') || linkTarget.closest('.internal-link')) return null;
 
         const textLink = this.getMarkdownLinkByDisplayText(content, linkTarget);
         if (textLink && !this.isRangeInsideCode(editorView, textLink.start, textLink.end)) {
@@ -4668,7 +4717,9 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setPlaceholder('300')
                         .setValue(String(this.plugin.settings.maxPreviewHeight))
                         .onChange(async (value) => {
-                            this.plugin.settings.maxPreviewHeight = Number(value);
+                            const height = Number(value);
+                            if (!Number.isFinite(height) || height < MIN_PREVIEW_HEIGHT) return;
+                            this.plugin.settings.maxPreviewHeight = height;
                             this.plugin.settings.persistedWidth = undefined;
                             this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();
@@ -4682,7 +4733,9 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setPlaceholder('400')
                         .setValue(String(this.plugin.settings.maxPreviewWidth))
                         .onChange(async (value) => {
-                            this.plugin.settings.maxPreviewWidth = Number(value);
+                            const width = Number(value);
+                            if (!Number.isFinite(width) || width < MIN_PREVIEW_WIDTH) return;
+                            this.plugin.settings.maxPreviewWidth = width;
                             this.plugin.settings.persistedWidth = undefined;
                             this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();

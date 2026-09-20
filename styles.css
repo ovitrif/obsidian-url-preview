@@ -20,7 +20,7 @@
     flex-direction: column;
     pointer-events: all;
     position: fixed;
-    z-index: var(--layer-popover);
+    z-index: var(--layer-popover, 30);
     min-height: 100px;
     overflow: hidden;
 }
@@ -62,7 +62,7 @@
 /* Reserve space within the existing page, without creating workspace leaves. */
 .url-preview-divider {
     position: fixed;
-    z-index: calc(var(--layer-popover) + 2);
+    z-index: calc(var(--layer-popover, 30) + 2);
     width: 8px;
     cursor: col-resize;
     touch-action: none;
@@ -91,7 +91,7 @@
 .url-preview-divider-shield {
     position: fixed;
     inset: 0;
-    z-index: calc(var(--layer-popover) + 1);
+    z-index: calc(var(--layer-popover, 30) + 1);
     cursor: col-resize;
 }
 
@@ -170,7 +170,7 @@ body.url-preview-hide-loading-indicators .preview-iframe-wrapper .preview-frame 
 }
 
 .tooltip.url-preview-toolbar-tooltip {
-    z-index: var(--layer-tooltip);
+    z-index: var(--layer-tooltip, 70);
     max-width: min(260px, calc(100vw - 24px));
     padding: 4px 8px;
     border-radius: var(--radius-s);
@@ -192,7 +192,7 @@ body.url-preview-hide-external-link-icon .external-link {
 
 .url-preview-inline-controls {
     position: fixed;
-    z-index: calc(var(--layer-popover) - 1);
+    z-index: calc(var(--layer-popover, 30) - 1);
     display: flex;
     align-items: center;
     gap: 3px;
@@ -304,7 +304,7 @@ body.url-preview-hide-external-link-icon .external-link {
 
 .url-preview-github-hover-card {
     position: fixed;
-    z-index: calc(var(--layer-popover) + 1);
+    z-index: calc(var(--layer-popover, 30) + 1);
     box-sizing: border-box;
     width: min(420px, calc(100vw - 20px));
     max-width: calc(100vw - 20px);
@@ -809,7 +809,7 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
 /* Live size indicator during resize */
 .resize-size-indicator {
     position: fixed;
-    z-index: calc(var(--layer-popover) + 1);
+    z-index: calc(var(--layer-popover, 30) + 1);
     padding: 2px 6px;
     background: var(--background-secondary);
     border: 1px solid var(--background-modifier-border);
@@ -835,6 +835,7 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
 /* Respect the OS reduced-motion setting: the shimmer and the spinners are decorative. */
 @media (prefers-reduced-motion: reduce) {
     .url-preview-github-hover-card-description-skeleton,
+    .url-preview-github-hover-card-description,
     .preview-loading::after,
     .preview-page-loading::after,
     .preview-loading,
@@ -844,7 +845,6 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
 
     .url-preview-github-hover-card,
     .url-preview-github-hover-card-copy,
-    .url-preview-github-hover-card-description,
     .preview-page-loading,
     .url-preview-divider::after {
         transition: none;
