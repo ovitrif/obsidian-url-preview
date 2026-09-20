@@ -521,6 +521,7 @@ export default class LinkPreviewPlugin extends Plugin {
         sourceKey?: string,
         returnFocusTo?: HTMLElement
     };
+    private lastEditorEscape = 0;
     private lastMouseX = 0;
     private lastMouseY = 0;
     private lastMoveX = 0;
@@ -807,6 +808,19 @@ export default class LinkPreviewPlugin extends Plugin {
                 // A floating preview closes wherever focus is: unlike the panel, Escape is
                 // how you dismiss it, and focus usually never left the note.
                 if (this.activePreview?.doc === doc) {
+                    // Except in Vim mode, where the same keystroke leaves insert mode.
+                    // CodeMirror handles it on `contentDOM`, a descendant, so it runs after
+                    // this capture listener and `defaultPrevented` is still false here —
+                    // measured on 1.13.7. Ask for a second Escape instead, the way the
+                    // shortcut inside a previewed page already does.
+                    if (this.isVimEscapeInEditor(focused)) {
+                        const now = Date.now();
+                        if (!this.lastEditorEscape || now - this.lastEditorEscape > 500) {
+                            this.lastEditorEscape = now;
+                            return;
+                        }
+                    }
+                    this.lastEditorEscape = 0;
                     this.cleanupActivePreview();
                     return;
                 }
@@ -2120,6 +2134,18 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private hideAllEditorHoverUi() {
         for (const doc of this.handledDocuments) {
             this.hideEditorHoverUi(doc);
+        }
+    }
+
+    // `vimMode` is a vault config key rather than part of the plugin API, so it is read
+    // defensively: if it is unavailable the preview keeps its single-Escape behaviour.
+    private isVimEscapeInEditor(focused: Element | null): boolean {
+        if (!focused?.closest('.cm-editor')) return false;
+        try {
+            const vault = this.app.vault as unknown as { getConfig?(key: string): unknown };
+            return vault.getConfig?.('vimMode') === true;
+        } catch {
+            return false;
         }
     }
 
@@ -3569,6 +3595,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         for (const doc of this.handledDocuments) {
             doc.body.removeClass('url-preview-inline-links', 'url-preview-hide-external-link-icon');
             doc.body.removeClass('url-preview-hide-loading-indicators');
+            doc.body.removeClass('url-preview-hide-resize', 'url-preview-hide-open-in-browser');
+            doc.body.removeClass('url-preview-hide-close-button');
         }
         this.cleanupActivePreview();
         // One preview that fails to tear down must not abort the rest of the unload.
