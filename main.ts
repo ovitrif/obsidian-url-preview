@@ -4617,7 +4617,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         const modifierGroup = new SettingGroup(containerEl)
             .setHeading('Preview click modifiers')
-            .addClass('settings-group-no-margin');
+            .addClass('url-preview-settings-group-no-margin');
 
         for (const { key, label } of modifierKeyNames) {
             modifierGroup.addSetting(setting => {
@@ -4642,7 +4642,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         const behaviorGroup = new SettingGroup(containerEl)
             .setHeading('Preview window')
-            .addClass('settings-group-no-margin');
+            .addClass('url-preview-settings-group-no-margin');
 
         behaviorGroup.addSetting(setting => {
             setting
@@ -4658,7 +4658,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         const inlineGroup = new SettingGroup(containerEl)
             .setHeading('Inline links')
-            .addClass('settings-group-no-margin');
+            .addClass('url-preview-settings-group-no-margin');
 
         inlineGroup.addSetting(setting => {
             setting
@@ -4745,7 +4745,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         new SettingGroup(containerEl)
             .setHeading('Preview size')
-            .addClass('settings-group-no-margin')
+            .addClass('url-preview-settings-group-no-margin')
             .addSetting(setting => {
                 setting
                     .setName('Maximum height')
@@ -4787,7 +4787,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         const resizeGroup = new SettingGroup(containerEl)
             .setHeading('Resize')
-            .addClass('settings-group-no-margin');
+            .addClass('url-preview-settings-group-no-margin');
 
         resizeGroup.addSetting(setting => {
             setting
@@ -4837,7 +4837,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     }));
             }
             if (!isResizeEnabled) {
-                setting.settingEl.addClass('setting-disabled');
+                setting.settingEl.addClass('url-preview-setting-disabled');
             }
         });
     }
