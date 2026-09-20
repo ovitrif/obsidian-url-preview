@@ -107,6 +107,7 @@ interface PreviewWebviewElement extends HTMLElement {
     canGoToOffset(offset: number): boolean;
     goToOffset(offset: number): void;
     loadURL(url: string): Promise<void>;
+    setAudioMuted(muted: boolean): void;
 }
 
 type PreviewFrameElement = HTMLIFrameElement | PreviewWebviewElement;
@@ -145,6 +146,7 @@ class PreviewSidePanel {
         host.addClass('url-preview-has-side-panel');
         entry.element.addClass('is-docked');
         entry.element.removeClass('is-cached');
+        plugin.setPreviewMuted(entry, false);
         this.divider = entry.doc.body.createDiv('url-preview-divider');
         this.divider.setAttr('role', 'separator');
         this.divider.setAttr('aria-label', 'Resize note and preview');
@@ -280,6 +282,14 @@ interface ElectronModule {
 
 const MIN_PREVIEW_WIDTH = 200;
 const MIN_PREVIEW_HEIGHT = 150;
+
+// A hand-edited or half-typed size must never shrink a preview to nothing.
+function sanitizePreviewSize(persisted: number | undefined, configured: number, fallback: number, minimum: number): number {
+    for (const candidate of [persisted, configured, fallback]) {
+        if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= minimum) return candidate;
+    }
+    return minimum;
+}
 const INLINE_CONTROLS_GAP = 4;
 const INLINE_CONTROLS_HOVER_PADDING_X = 12;
 const INLINE_CONTROLS_HOVER_PADDING_Y = 10;
@@ -2170,17 +2180,46 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         this.cleanupActivePreview();
         const doc = link.ownerDocument;
-        const sidePanel = [...this.previewCache.values()].find(entry => entry.doc === doc && entry.dock);
-        if (sidePanel?.dock) {
-            if (this.getPreviewFrameUrl(sidePanel.controller) !== url) {
-                this.navigatePreviewFrame(sidePanel.controller, url);
-                sidePanel.url = url;
-            }
-            sidePanel.dock.updateBounds();
+        // Only a visible panel that owns this link reuses itself; otherwise the click would
+        // retarget a panel the user cannot see, or one parked over a different note.
+        const sidePanel = [...this.previewCache.values()].find(entry =>
+            entry.doc === doc && entry.dock && !entry.element.hasClass('is-cached') &&
+            entry.dock.host.contains(link));
+        if (sidePanel) {
+            void this.showPreviewInSidePanel(sidePanel, link, url, hoverElement, sourceKey);
             return;
         }
+        this.showFloatingPreview(link, url, hoverElement, sourceKey);
+    }
+
+    private async showPreviewInSidePanel(panel: CachedPreview, link: HTMLElement, url: string,
+        hoverElement: HTMLElement, sourceKey?: string) {
+        if (this.getPreviewFrameUrl(panel.controller) !== url) {
+            let dirty = false;
+            try {
+                dirty = (await this.readPreviewState(panel)).dirty;
+            } catch {
+                // A page that cannot report its state has nothing to lose.
+            }
+            if (!panel.dock || !panel.element.isConnected) {
+                this.showFloatingPreview(link, url, hoverElement, sourceKey);
+                return;
+            }
+            if (dirty) {
+                new Notice('Side panel has unsaved input, opening a floating preview instead');
+                this.showFloatingPreview(link, url, hoverElement, sourceKey);
+                return;
+            }
+            this.navigatePreviewFrame(panel.controller, url);
+            panel.url = url;
+        }
+        panel.dock?.updateBounds();
+    }
+
+    private showFloatingPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
+        const doc = link.ownerDocument;
         const cached = [...this.previewCache.values()].find(entry =>
-            entry.doc === doc && entry.url === url && entry.element.isConnected);
+            entry.doc === doc && entry.url === url && entry.element.isConnected && !entry.dock);
         const entry = cached ?? this.createCachedPreview(link, url);
         this.activateCachedPreview(entry, link, hoverElement, sourceKey);
         if (cached) void this.refreshCachedPreview(entry);
@@ -2237,6 +2276,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         bounds?: { left: number; top: number; width: number; height: number }) {
         const { element: previewEl, doc } = entry;
         previewEl.removeClass('is-cached', 'is-refreshing', 'is-docked');
+        this.setPreviewMuted(entry, false);
         const win = doc.defaultView ?? window;
         // A refreshed page already has its final viewport and restored scroll.
         // Resizing it again here can trigger the website's scroll anchoring.
@@ -2273,10 +2313,22 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             entry.cancelRefresh?.();
             entry.url = this.getPreviewFrameUrl(entry.controller);
             previewEl.addClass('is-cached');
+            this.setPreviewMuted(entry, true);
             void this.flushPreviewSessionStorage();
             this.activePreview = undefined;
         };
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
+    }
+
+    // A cached preview stays attached and keeps playing; silence it while it is out of sight.
+    setPreviewMuted(entry: CachedPreview, muted: boolean) {
+        const frame = entry.controller.element;
+        if (!this.isPreviewWebview(frame)) return;
+        try {
+            frame.setAudioMuted(muted);
+        } catch {
+            // The guest is not attached yet, so it has nothing to play.
+        }
     }
 
     private disposeCachedPreview(entry: CachedPreview) {
@@ -2299,11 +2351,20 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private executeInPreview(frame: PreviewFrameElement, code: string): Promise<unknown> {
         if (!this.isPreviewWebview(frame)) return Promise.reject(new Error('Desktop preview required'));
-        const remote = this.getRequireFunction()?.('@electron/remote') as {
-            webContents: { fromId(id: number): { mainFrame: { executeJavaScript(code: string): Promise<unknown> } } | undefined };
-        } | undefined;
-        const mainFrame = remote?.webContents.fromId(frame.getWebContentsId())?.mainFrame;
-        return mainFrame ? mainFrame.executeJavaScript(code) : frame.executeJavaScript(code);
+        try {
+            const remote = this.getRequireFunction()?.('@electron/remote') as {
+                webContents?: { fromId(id: number): { mainFrame: { executeJavaScript(code: string): Promise<unknown> } } | undefined };
+            } | undefined;
+            const mainFrame = remote?.webContents?.fromId(frame.getWebContentsId())?.mainFrame;
+            if (mainFrame) return mainFrame.executeJavaScript(code);
+        } catch {
+            // Hosts without Electron remote fall back to the webview's own bridge.
+        }
+        try {
+            return frame.executeJavaScript(code);
+        } catch (error) {
+            return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+        }
     }
 
     private async readPreviewState(entry: CachedPreview): Promise<{ x: number; y: number; dirty: boolean }> {
@@ -2401,6 +2462,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         entry.dock = undefined;
         entry.element.removeClass('is-docked');
         entry.element.addClass('is-cached');
+        this.setPreviewMuted(entry, true);
         this.updateDockButton(entry.element, false);
         if (trim) this.trimPreviewCache();
     }
@@ -2408,7 +2470,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     positionDockPreview(entry: CachedPreview, host: HTMLElement, content: HTMLElement) {
         const rect = host.getBoundingClientRect();
         const page = content.getBoundingClientRect();
-        entry.element.toggleClass('is-cached', rect.width === 0 || page.height === 0);
+        const hidden = rect.width === 0 || page.height === 0;
+        entry.element.toggleClass('is-cached', hidden);
+        this.setPreviewMuted(entry, hidden);
         this.applyPreviewBounds(entry.element, { left: page.right, top: page.top, width: Math.max(0, rect.right - page.right), height: page.height });
         this.applyPreviewViewportProps(entry.element, entry.controller.currentUrl);
     }
@@ -2419,6 +2483,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             const anchor = entry.floatingAnchor?.isConnected ? entry.floatingAnchor : entry.dock.host;
             entry.dock.close(false);
             this.cleanupActivePreview();
+            // Restore the geometry the preview had before it was docked, not the panel's.
+            if (entry.floatingBounds) this.applyPreviewBounds(entry.element, entry.floatingBounds);
             this.activateCachedPreview(entry, anchor, anchor, undefined, entry.floatingBounds);
             return;
         }
@@ -2598,7 +2664,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             };
             contents.on('before-input-event', listener);
             controller.cleanupKeyboard = () => {
-                if (!contents.isDestroyed()) contents.removeListener('before-input-event', listener);
+                try {
+                    if (!contents.isDestroyed()) contents.removeListener('before-input-event', listener);
+                } catch {
+                    // The remote reference dies with its window; nothing is left to detach.
+                }
             };
         } catch {
             // Embedded keyboard access is only available in desktop hosts exposing Electron remote.
@@ -2844,7 +2914,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             doc.body.removeClass('url-preview-hide-loading-indicators');
         }
         this.cleanupActivePreview();
-        for (const entry of this.previewCache.values()) this.disposeCachedPreview(entry);
+        // One preview that fails to tear down must not abort the rest of the unload.
+        for (const entry of [...this.previewCache.values()]) {
+            try {
+                this.disposeCachedPreview(entry);
+            } catch {
+                entry.element.remove();
+            }
+        }
         for (const doc of this.inlinePreviewControls.keys()) {
             this.removeInlinePreviewControls(doc);
         }
@@ -3660,12 +3737,15 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         showAbove: boolean
     } {
         const margin = 5; // Margin from edges
-        const targetWidth = (this.settings.persistResize && this.settings.persistedWidth)
-            ? this.settings.persistedWidth : this.settings.maxPreviewWidth;
-        const targetHeight = (this.settings.persistResize && this.settings.persistedHeight)
-            ? this.settings.persistedHeight : this.settings.maxPreviewHeight;
-        const maxWidth = Math.min(targetWidth, windowSize.width - margin * 2);
-        const maxHeight = Math.min(targetHeight, windowSize.height - margin * 2);
+        const usePersisted = this.settings.allowResize && this.settings.persistResize;
+        const targetWidth = sanitizePreviewSize(
+            usePersisted ? this.settings.persistedWidth : undefined,
+            this.settings.maxPreviewWidth, DEFAULT_SETTINGS.maxPreviewWidth, MIN_PREVIEW_WIDTH);
+        const targetHeight = sanitizePreviewSize(
+            usePersisted ? this.settings.persistedHeight : undefined,
+            this.settings.maxPreviewHeight, DEFAULT_SETTINGS.maxPreviewHeight, MIN_PREVIEW_HEIGHT);
+        const maxWidth = Math.min(targetWidth, Math.max(MIN_PREVIEW_WIDTH, windowSize.width - margin * 2));
+        const maxHeight = Math.min(targetHeight, Math.max(MIN_PREVIEW_HEIGHT, windowSize.height - margin * 2));
         
         // Determine if we should show above or below
         const spaceBelow = windowSize.height - rect.bottom - margin;
@@ -3894,7 +3974,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private parseBareMarkdownUrls(content: string, excludedRanges: TextRange[] = []): ParsedMarkdownLink[] {
         const links: ParsedMarkdownLink[] = [];
         const occupiedRanges = [...excludedRanges];
-        const urlRegex = /(?:https?:\/\/|(?:www\.)?github\.com\/)[^\s<>"')]+/gi;
+        // ')' stays in the match so that Wikipedia-style URLs keep their closing paren;
+        // trimBareUrlPunctuation drops the ones that are sentence punctuation.
+        const urlRegex = /(?:https?:\/\/|(?:www\.)?github\.com\/)[^\s<>"']+/gi;
         let match: RegExpExecArray | null;
 
         while ((match = urlRegex.exec(content)) !== null) {
@@ -3931,7 +4013,20 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private trimBareUrlPunctuation(candidate: string): string {
-        return candidate.replace(/[.,;:!?\]}]+$/g, '');
+        let trimmed = candidate.replace(/[.,;:!?\]}]+$/g, '');
+
+        // Keep parens that the URL itself opened, drop the ones that close surrounding prose.
+        while (trimmed.endsWith(')')) {
+            let depth = 0;
+            for (const char of trimmed) {
+                if (char === '(') depth++;
+                else if (char === ')') depth--;
+            }
+            if (depth >= 0) break;
+            trimmed = trimmed.slice(0, -1).replace(/[.,;:!?\]}]+$/g, '');
+        }
+
+        return trimmed;
     }
 
     private findClosingBracket(content: string, start: number): number {
@@ -4033,6 +4128,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private isActivePreviewForLink(linkInfo: LinkInfo): boolean {
         if (!this.activePreview) return false;
+        // A preview whose element is gone can never come back; clearing it here keeps
+        // the link clickable instead of silently matching a preview that no longer exists.
+        if (!this.activePreview.element.isConnected) {
+            this.cleanupActivePreview();
+            return false;
+        }
         if (this.activePreview.link !== linkInfo.hoverElement) return false;
 
         if (this.activePreview.sourceKey || linkInfo.sourceKey) {
@@ -4043,9 +4144,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private extractUrlFromElement(element: HTMLElement): string | null {
-        // For anchor elements, use href directly
+        // Anchors carry a resolved href, so internal links surface as app:// URLs.
+        // Normalizing here keeps Obsidian's own links out of the preview.
         if (element instanceof HTMLAnchorElement) {
-            return element.href;
+            return this.normalizeUrl(element.href);
         }
 
         // Check element's own attributes
@@ -4091,11 +4193,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         try {
             const response = await requestUrl({ url, headers, throw: false });
+            // An error page has a title of its own; using it would write "Page not found" into the note.
+            if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
             return response.text;
-        } catch {
-            if (!headers.Cookie) throw new Error('Title request failed');
+        } catch (error) {
+            if (!headers.Cookie) throw error instanceof Error ? error : new Error('Title request failed');
 
             const response = await requestUrl({ url, headers: this.getTitleRequestBaseHeaders(), throw: false });
+            if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
             return response.text;
         }
     }
