@@ -2592,12 +2592,26 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         // Add click-outside handler for sticky popup mode
         let clickOutsideHandler: ((e: MouseEvent) => void) | undefined;
+        let pressHandler: ((e: MouseEvent) => void) | undefined;
         if (this.settings.stickyPopup) {
+            // A drag that starts on a resize handle and ends past the window edge still
+            // delivers a click, whose target is then the document rather than the preview.
+            // Releasing a resize is not a click away from the preview.
+            let pressedInside = false;
+            pressHandler = (e: MouseEvent) => {
+                const target = e.target;
+                pressedInside = target instanceof Element &&
+                    (previewEl.contains(target) || hoverElement.contains(target));
+            };
             clickOutsideHandler = (e: MouseEvent) => {
                 const target = e.target;
                 // Measured on Obsidian 1.13.7: a popout's elements satisfy the main realm's
                 // `Element` (and not the popout window's), so this narrowing holds there.
                 if (!(target instanceof Element)) return;
+                if (pressedInside) {
+                    pressedInside = false;
+                    return;
+                }
                 if (!previewEl.contains(target) && !hoverElement.contains(target)) {
                     this.cleanupActivePreview();
                 }
@@ -2608,12 +2622,16 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const clickTimer = win.setTimeout(() => {
             if (clickOutsideHandler && this.activePreview?.element === previewEl) {
                 doc.addEventListener('click', clickOutsideHandler);
+                if (pressHandler) doc.addEventListener('mousedown', pressHandler, true);
             }
         }, 0);
         const cleanupWithClickHandler = () => {
             win.clearTimeout(clickTimer);
             if (clickOutsideHandler) {
                 doc.removeEventListener('click', clickOutsideHandler);
+            }
+            if (pressHandler) {
+                doc.removeEventListener('mousedown', pressHandler, true);
             }
             entry.cancelRefresh?.();
             entry.url = this.getPreviewFrameUrl(entry.controller);
