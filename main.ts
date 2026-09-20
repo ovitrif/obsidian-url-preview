@@ -123,6 +123,9 @@ interface PreviewFrameController {
     startLoading?: () => void;
 }
 
+// Neither pane is useful below this width, so the divider stops there.
+const SIDE_PANEL_MIN_WIDTH = 280;
+
 interface CachedPreview {
     url: string;
     doc: Document;
@@ -139,6 +142,8 @@ class PreviewSidePanel {
     readonly divider: HTMLElement;
     private stopDrag?: () => void;
     private ratio: number;
+    private saveTimer?: number;
+    private closing = false;
 
     constructor(readonly entry: CachedPreview, readonly host: HTMLElement,
         private content: HTMLElement, private plugin: LinkPreviewPlugin) {
@@ -173,8 +178,7 @@ class PreviewSidePanel {
                 entry.element.removeClass('is-divider-resizing');
                 this.divider.removeClass('is-dragging');
                 this.stopDrag = undefined;
-                plugin.settings.sidePanelRatio = this.ratio;
-                void plugin.saveSettings();
+                this.scheduleSave();
             };
             this.stopDrag = stop;
             entry.doc.addEventListener('pointermove', move);
@@ -186,8 +190,7 @@ class PreviewSidePanel {
             if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
             event.preventDefault();
             this.setRatio(this.ratio + (event.key === 'ArrowLeft' ? -0.02 : 0.02));
-            plugin.settings.sidePanelRatio = this.ratio;
-            void plugin.saveSettings();
+            this.scheduleSave();
         });
         this.observer = new ResizeObserver(() => this.updateBounds());
         this.observer.observe(host);
@@ -195,12 +198,27 @@ class PreviewSidePanel {
         this.updateBounds();
     }
 
+    // Autorepeat on the arrow keys would otherwise write data.json ~30 times a second.
+    private scheduleSave() {
+        if (this.closing) return;
+        const win = this.entry.doc.defaultView ?? window;
+        if (this.saveTimer !== undefined) win.clearTimeout(this.saveTimer);
+        this.saveTimer = win.setTimeout(() => {
+            this.saveTimer = undefined;
+            this.plugin.settings.sidePanelRatio = this.ratio;
+            void this.plugin.saveSettings();
+        }, 300);
+    }
+
     updateBounds() {
-        if (!this.host.isConnected) { this.close(); return; }
+        if (!this.host.isConnected || this.host.ownerDocument !== this.entry.doc) { this.close(); return; }
         const width = this.host.getBoundingClientRect().width;
         if (width > 0) {
-            const minimum = Math.min(280 / width, 0.5);
+            const minimum = Math.min(SIDE_PANEL_MIN_WIDTH / width, 0.5);
             const ratio = Math.min(1 - minimum, Math.max(minimum, this.ratio));
+            // Keep the stored ratio inside the range the current window allows, so the next
+            // arrow key moves the divider instead of being clamped back to where it already is.
+            this.ratio = ratio;
             this.host.setCssProps({ '--url-preview-note-width': `${ratio * 100}%` });
             this.divider.setAttr('aria-valuenow', String(Math.round(ratio * 100)));
         }
@@ -212,12 +230,14 @@ class PreviewSidePanel {
 
     private setRatio(ratio: number) {
         const width = this.host.getBoundingClientRect().width;
-        const minimum = width > 0 ? Math.min(280 / width, 0.5) : 0.5;
+        const minimum = width > 0 ? Math.min(SIDE_PANEL_MIN_WIDTH / width, 0.5) : 0.5;
         this.ratio = Math.min(1 - minimum, Math.max(minimum, ratio));
         this.updateBounds();
     }
 
     close(trim = true) {
+        this.closing = true;
+        if (this.saveTimer !== undefined) (this.entry.doc.defaultView ?? window).clearTimeout(this.saveTimer);
         this.stopDrag?.();
         this.observer.disconnect();
         this.divider.remove();
@@ -230,6 +250,8 @@ class PreviewSidePanel {
 interface GitHubPullRequestBadgeObserver {
     observer: MutationObserver;
     scheduled: boolean;
+    frame?: number;
+    win?: Window;
 }
 
 interface GitHubHoverCardData {
@@ -299,6 +321,8 @@ const INLINE_CONTROLS_ADORNMENT_SCAN_WIDTH = 120;
 const GITHUB_PULL_REQUEST_BADGE_WIDGET_SIDE = 10000;
 const GITHUB_HOVER_CARD_DELAY_MS = 250;
 const GITHUB_HOVER_CARD_GAP = 12;
+// Hovered GitHub references accumulate for the whole session otherwise.
+const GITHUB_HOVER_CARD_CACHE_LIMIT = 100;
 const GITHUB_HOVER_CARD_HIDE_DELAY_MS = 300;
 const GITHUB_HOVER_CARD_MARGIN = 10;
 const GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH = 320;
@@ -474,6 +498,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private githubHoverCards = new Map<Document, GitHubHoverCardState>();
     private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
+    private lastPreviewChromeSignature: string | undefined;
 
     async onload() {
         await this.loadSettings();
@@ -498,7 +523,30 @@ export default class LinkPreviewPlugin extends Plugin {
             })
         );
         this.registerEditorExtension(this.createGitHubPullRequestBadgeExtension());
-        
+
+        // Modifier+click and the inline button both need a mouse. This is the only way to
+        // reach a preview from the keyboard, or at all on a touch device.
+        this.addCommand({
+            id: 'preview-link-at-cursor',
+            name: 'Preview link at cursor',
+            editorCheckCallback: (checking, editor, ctx) => {
+                const content = editor.getValue();
+                const link = this.getEditorLinkAtCursor(editor, content, null);
+                if (!link) return false;
+                if (checking) return true;
+
+                const anchor = ctx instanceof MarkdownView ? ctx.contentEl : undefined;
+                if (!anchor) return false;
+                this.openPreviewForLink({
+                    element: anchor,
+                    hoverElement: anchor,
+                    sourceKey: this.getMarkdownLinkSourceKey(link),
+                    url: link.url,
+                });
+                return true;
+            },
+        });
+
         this.addSettingTab(new LinkPreviewSettingTab(this.app, this));
     }
 
@@ -687,6 +735,8 @@ export default class LinkPreviewPlugin extends Plugin {
         if (!observerState) return;
 
         observerState.observer.disconnect();
+        // A frame already queued would put every badge back after teardown.
+        if (observerState.frame !== undefined) observerState.win?.cancelAnimationFrame(observerState.frame);
         this.githubPullRequestBadgeObservers.delete(doc);
         doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
         doc.body.removeClass('url-preview-hide-github-pr-badges');
@@ -698,8 +748,11 @@ export default class LinkPreviewPlugin extends Plugin {
 
         observerState.scheduled = true;
         const win = doc.defaultView ?? window;
-        win.requestAnimationFrame(() => {
+        observerState.win = win;
+        observerState.frame = win.requestAnimationFrame(() => {
             observerState.scheduled = false;
+            observerState.frame = undefined;
+            if (!this.githubPullRequestBadgeObservers.has(doc)) return;
             this.updateGitHubPullRequestBadges(doc);
         });
     }
@@ -1366,16 +1419,25 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const promise = this.fetchGitHubHoverCardData(linkInfo, reference)
             .then((data) => {
                 this.githubHoverCardDataCache.set(linkInfo.url, data);
+                this.trimGitHubHoverCardCache();
                 return data;
             })
             .catch(() => {
-                const data = this.createGitHubHoverCardFallbackData(linkInfo, reference);
-                this.githubHoverCardDataCache.set(linkInfo.url, data);
-                return data;
+                // Drop the entry instead of caching the placeholder: a single offline or
+                // rate-limited hover would otherwise stand in for the real title all session.
+                this.githubHoverCardDataCache.delete(linkInfo.url);
+                return this.createGitHubHoverCardFallbackData(linkInfo, reference);
             });
 
         this.githubHoverCardDataCache.set(linkInfo.url, promise);
         return promise;
+    }
+
+    private trimGitHubHoverCardCache() {
+        for (const url of this.githubHoverCardDataCache.keys()) {
+            if (this.githubHoverCardDataCache.size <= GITHUB_HOVER_CARD_CACHE_LIMIT) break;
+            this.githubHoverCardDataCache.delete(url);
+        }
     }
 
     private getCachedGitHubHoverCardData(url: string): GitHubHoverCardData | null {
@@ -2353,6 +2415,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private disposeCachedPreview(entry: CachedPreview) {
         // Remove first so closing the panel cannot evict this entry recursively.
         this.previewCache.delete(entry.element);
+        if (this.activePreview?.element === entry.element || entry.element.hasClass('is-resizing')) {
+            this.activeResizeCleanup?.();
+            this.activeResizeCleanup = undefined;
+        }
         entry.dock?.close();
         entry.cancelRefresh?.();
         entry.controller.cleanupKeyboard?.();
@@ -2874,8 +2940,15 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         let modifierKeys: ModifierKeyConfig;
 
         if (loaded?.modifierKeys) {
-            // New format exists, use it
-            modifierKeys = loaded.modifierKeys;
+            // Merge over the defaults and keep only known keys, so a key added in a later
+            // version gets its default and a stale one is not written back on every save.
+            const stored = loaded.modifierKeys as Partial<ModifierKeyConfig>;
+            modifierKeys = {
+                meta: stored.meta ?? DEFAULT_MODIFIER_KEYS.meta,
+                ctrl: stored.ctrl ?? DEFAULT_MODIFIER_KEYS.ctrl,
+                alt: stored.alt ?? DEFAULT_MODIFIER_KEYS.alt,
+                shift: stored.shift ?? DEFAULT_MODIFIER_KEYS.shift,
+            };
         } else if (loaded?.modifierKey) {
             // Migrate from old single key format
             modifierKeys = { ...DEFAULT_MODIFIER_KEYS, [loaded.modifierKey]: true };
@@ -2927,7 +3000,22 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     async saveSettings() {
         await this.saveData(this.settings);
+        // Toolbar buttons and resize handles are built once per preview, so a cached page
+        // would keep the old chrome until it aged out. Drop the idle ones instead.
+        const chrome = this.previewChromeSignature();
+        if (this.lastPreviewChromeSignature !== undefined && this.lastPreviewChromeSignature !== chrome) {
+            for (const entry of [...this.previewCache.values()]) {
+                if (entry.dock || entry.element === this.activePreview?.element) continue;
+                this.disposeCachedPreview(entry);
+            }
+        }
+        this.lastPreviewChromeSignature = chrome;
         for (const doc of this.handledDocuments) this.applyDisplaySettings(doc);
+    }
+
+    private previewChromeSignature(): string {
+        const { showOpenInBrowser, showCloseButton, allowResize } = this.settings;
+        return `${showOpenInBrowser}|${showCloseButton}|${allowResize}`;
     }
 
     private applyDisplaySettings(doc: Document) {
@@ -3708,15 +3796,24 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 newHeight = MIN_PREVIEW_HEIGHT;
             }
 
-            // Clamp to viewport
-            newLeft = Math.max(margin, newLeft);
-            newTop = Math.max(margin, newTop);
+            // Clamp to viewport. Dragging a west or north edge past the window edge must
+            // stop the pane growing, not push its opposite edge outwards.
+            if (newLeft < margin) {
+                if (direction.includes('w')) newWidth -= margin - newLeft;
+                newLeft = margin;
+            }
+            if (newTop < margin) {
+                if (direction.includes('n')) newHeight -= margin - newTop;
+                newTop = margin;
+            }
             if (newLeft + newWidth > win.innerWidth - margin) {
                 newWidth = win.innerWidth - margin - newLeft;
             }
             if (newTop + newHeight > win.innerHeight - margin) {
                 newHeight = win.innerHeight - margin - newTop;
             }
+            newWidth = Math.max(MIN_PREVIEW_WIDTH, newWidth);
+            newHeight = Math.max(MIN_PREVIEW_HEIGHT, newHeight);
 
             previewEl.setCssStyles({
                 left: `${newLeft}px`,
