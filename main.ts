@@ -10,6 +10,7 @@ import {
     App,
     Component,
     Editor,
+    TFile,
     MarkdownView,
     Menu,
     Notice,
@@ -55,6 +56,9 @@ interface EditorContextLink {
     link: ParsedMarkdownLink;
     rawText: string;
     timestamp: number;
+    // The note the right-click happened in. The url-menu path writes into whatever view is
+    // active, which is not necessarily the one under the pointer.
+    file: TFile | null;
 }
 
 interface TextRange {
@@ -271,6 +275,9 @@ interface GitHubPullRequestBadgeObserver {
 }
 
 interface GitHubHoverCardData {
+    // True when the title came from the note's link text because the page did not supply one.
+    // Good enough to show on a card, but not something to copy or paste into another note.
+    titleFromLinkText?: boolean;
     description: string | null;
     id: string;
     repoLabel: string;
@@ -523,6 +530,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private previewCache = new Map<HTMLElement, CachedPreview>();
     private lastPreviewChromeSignature: string | undefined;
     private previewRequest = 0;
+    private settingsWrite: Promise<void> = Promise.resolve();
     private unloaded = false;
     private editorLinkCache = new WeakMap<EditorView, { doc: unknown; links: ParsedMarkdownLink[] }>();
     private editorContentCache = new WeakMap<EditorView, { doc: unknown; content: string }>();
@@ -756,7 +764,7 @@ export default class LinkPreviewPlugin extends Plugin {
                     const win = doc.defaultView ?? window;
                     win.setTimeout(() => this.hideEditorHoverUi(doc), 0);
                 }
-                if (e.key === 'Escape' && this.activePreview) {
+                if (e.key === 'Escape' && this.activePreview?.doc === doc) {
                     this.cleanupActivePreview();
                 }
                 if (e.key === 'Escape') {
@@ -1110,6 +1118,7 @@ export default class LinkPreviewPlugin extends Plugin {
             link,
             rawText: content.slice(link.start, link.end),
             timestamp: Date.now(),
+            file: this.fileForEditorTarget(editorView),
         };
     }
 
@@ -1519,6 +1528,7 @@ export default class LinkPreviewPlugin extends Plugin {
             repoLabel: `${reference.owner}/${reference.repo}`,
             shortReference: reference.shortReference,
             state: null,
+            titleFromLinkText: true,
             title: this.getGitHubHoverCardLinkTitle(linkInfo, reference) ??
                 `${reference.type === 'pull' ? 'Pull request' : 'Issue'} #${reference.id}`,
             type: reference.type,
@@ -1575,10 +1585,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const fallbackData = this.createGitHubHoverCardFallbackData(linkInfo, reference);
         const html = await this.fetchPageHtml(linkInfo.url);
         const parsedDocument = new DOMParser().parseFromString(html, 'text/html');
-        const title = this.extractGitHubPageTitle(parsedDocument, linkInfo.url) ?? fallbackData.title;
+        const pageTitle = this.extractGitHubPageTitle(parsedDocument, linkInfo.url);
+        const usable = pageTitle && !this.isUnusablePageTitle(pageTitle, linkInfo.url) ? pageTitle : null;
+        const title = usable ?? fallbackData.title;
 
         return {
             ...fallbackData,
+            titleFromLinkText: !usable,
             description: this.extractGitHubHoverCardDescription(parsedDocument, title),
             state: this.extractGitHubHoverCardState(parsedDocument),
             title,
@@ -2041,6 +2054,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     ) {
         if (this.convertLinkMenus.has(menu)) return;
 
+        // The url-menu path resolves the editor separately from the click, so only offer the
+        // items when the note that was right-clicked is the one this editor is showing.
+        if (requireRecentContext && this.lastEditorContextLink &&
+            this.lastEditorContextLink.file !== this.fileForEditorTarget(editor)) return;
+
         const link = requireRecentContext
             ? this.getRecentEditorContextLink(editor.getValue(), expectedUrl ? this.normalizeUrl(expectedUrl) : null)
             : this.getEditorContextLink(editor, expectedUrl);
@@ -2138,7 +2156,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private async copyAgentSessionTitle(url: string, githubReference: GitHubIssueReference) {
         const cached = this.getCachedGitHubHoverCardData(url);
-        let title = cached?.title ?? null;
+        // A card can fall back to whatever text the note used for the link. That is fine to
+        // show in place, but copying it would paste one note's wording as the page's title.
+        let title = cached && !cached.titleFromLinkText ? cached.title : null;
 
         if (!title) {
             const notice = new Notice('Fetching page title...', 0);
@@ -2221,6 +2241,22 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return null;
     }
 
+    // A title fetch can take seconds, and a leaf reuses its editor when another note opens in
+    // it. Without pinning the file, the replacement could land in whatever note is showing now.
+    private fileForEditorTarget(target: Editor | EditorView): TFile | null {
+        let file: TFile | null = null;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (file) return;
+            const view = leaf.view;
+            if (!(view instanceof MarkdownView)) return;
+            const matches = target instanceof EditorView
+                ? (view.editor as unknown as { cm?: EditorView }).cm === target
+                : view.editor === target;
+            if (matches) file = view.file ?? null;
+        });
+        return file;
+    }
+
     private async convertEditorLinkToMarkdown(editor: Editor, originalLink: ParsedMarkdownLink) {
         let link = this.resolveCurrentEditorLink(editor, originalLink);
         if (!link) {
@@ -2228,10 +2264,16 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             return;
         }
 
+        const file = this.fileForEditorTarget(editor);
         const notice = new Notice('Fetching page title...', 0);
         const title = await this.fetchPageTitleForNotice(link.url, notice);
         if (!title) return;
 
+        if (this.fileForEditorTarget(editor) !== file) {
+            notice.hide();
+            new Notice('The note changed before the link could be converted.');
+            return;
+        }
         link = this.resolveCurrentEditorLink(editor, link);
         if (!link) {
             notice.hide();
@@ -2259,10 +2301,19 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             return;
         }
 
+        const file = this.fileForEditorTarget(editorView);
         const notice = new Notice('Fetching GitHub title...', 0);
         const title = await this.fetchPageTitleForNotice(link.url, notice);
         if (!title) return;
 
+        // A closed leaf resolves to no file, and CodeMirror swallows a dispatch on a destroyed
+        // view without throwing, so this is also what stops a success notice for a write that
+        // never happened.
+        if (!file || this.fileForEditorTarget(editorView) !== file) {
+            notice.hide();
+            new Notice('The note changed before the link could be converted.');
+            return;
+        }
         link = this.resolveCurrentEditorViewLink(editorView, link);
         if (!link) {
             notice.hide();
@@ -2759,7 +2810,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             note = null;
             this.app.workspace.iterateAllLeaves((candidate) => {
                 if (note || candidate.view.containerEl.ownerDocument !== entry.doc) return;
-                if (candidate.view.containerEl.querySelector(':scope > .view-content')) note = candidate;
+                // Any leaf has a .view-content, including the file explorer and a canvas;
+                // only a note can give up half its width to the panel.
+                if (candidate.view instanceof MarkdownView) note = candidate;
             });
         }
         const host = note?.view.containerEl;
@@ -2864,12 +2917,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const finishLoading = () => {
             previewEl.removeClass('is-page-loading');
             revealContent();
-            void this.flushPreviewSessionStorage();
         };
         let lastFailureNotice: string | undefined;
         const failLoading = (event: Event) => {
             if ('isMainFrame' in event && event.isMainFrame === false) return;
-            if ('errorCode' in event && event.errorCode === -3) return;
+            // -3 is an aborted load; -300..-302 are unknown or disallowed schemes, which a
+            // page triggers on its own when it links to a mail client or an app.
+            if ('errorCode' in event && typeof event.errorCode === 'number' &&
+                [-3, -300, -301, -302].includes(event.errorCode)) return;
             previewEl.removeClass('is-page-loading');
             if (hasRevealedInitialPage) {
                 // The previous page is still on screen, so an overlay would hide readable
@@ -2881,7 +2936,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                     window.setTimeout(() => { lastFailureNotice = undefined; }, 2000);
                     new Notice(`Could not load ${failedUrl}`);
                 }
-                this.updatePreviewNavigationControls(previewEl, controller);
+                // The previous page is still visible, so the toolbar keeps describing it
+                // rather than the URL that failed to commit.
                 return;
             }
 
@@ -3221,7 +3277,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     async saveSettings() {
-        await this.saveData(this.settings);
+        // Several controls save on every keystroke, drag end or click. Without a queue the
+        // adapter writes overlap and whichever snapshot lands last wins, silently reverting
+        // whatever was changed after it was serialized.
+        this.settingsWrite = this.settingsWrite
+            .catch(() => undefined)
+            .then(() => this.saveData(this.settings));
+        await this.settingsWrite;
         if (this.unloaded) return;
         // Toolbar buttons and resize handles are built once per preview, so a cached page
         // would keep the old chrome until it aged out. Drop the idle ones instead.
@@ -3250,6 +3312,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     onunload() {
         this.unloaded = true;
+        this.markdownLinkMemo = undefined;
+        this.bareUrlMemo = undefined;
+        this.electronSession = undefined;
         for (const doc of this.handledDocuments) {
             doc.body.removeClass('url-preview-inline-links', 'url-preview-hide-external-link-icon');
             doc.body.removeClass('url-preview-hide-loading-indicators');
@@ -3408,7 +3473,15 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return null;
     }
 
+    private electronSession: ElectronSession | null | undefined;
+
     private getElectronSession(): ElectronSession | null {
+        if (this.electronSession !== undefined) return this.electronSession;
+        this.electronSession = this.resolveElectronSession();
+        return this.electronSession;
+    }
+
+    private resolveElectronSession(): ElectronSession | null {
         if (!Platform.isDesktopApp) return null;
 
         const requireFn = this.getRequireFunction();
@@ -3443,11 +3516,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             // Session persistence is best-effort on Electron versions without this support.
         }
     }
-
-    private getElectronCookies(): ElectronCookies | null {
-        return this.getElectronSession()?.cookies ?? null;
-    }
-
 
     private getPreviewDomain(url: string): string | null {
         try {
@@ -4575,57 +4643,24 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private async fetchPageHtml(url: string): Promise<string> {
-        const headers = await this.getTitleRequestHeaders(url);
-
-        try {
-            const response = await this.withTitleRequestTimeout(requestUrl({ url, headers, throw: false }));
-            // An error page has a title of its own; using it would write "Page not found" into the note.
-            if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
-            return response.text;
-        } catch (error) {
-            if (!headers.Cookie) throw error instanceof Error ? error : new Error('Title request failed');
-
-            const response = await this.withTitleRequestTimeout(
-                requestUrl({ url, headers: this.getTitleRequestBaseHeaders(), throw: false }));
-            if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
-            return response.text;
-        }
+        const response = await this.withTitleRequestTimeout(
+            requestUrl({ url, headers: this.getTitleRequestHeaders(), throw: false }));
+        // An error page has a title of its own; using it would write "Page not found" into the note.
+        if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
+        return response.text;
     }
 
-    private async getTitleRequestHeaders(url: string): Promise<Record<string, string>> {
-        const headers = this.getTitleRequestBaseHeaders();
-        const cookieHeader = await this.getCookieHeaderForUrl(url);
-        if (cookieHeader) {
-            headers.Cookie = cookieHeader;
-        }
-        return headers;
+    // Deliberately anonymous. Attaching the browser session's cookies would fetch private
+    // pages' titles, but `requestUrl` follows redirects and a `Cookie` header cannot be scoped
+    // to an origin, so any URL in a note could carry a signed-in session to another host.
+    private getTitleRequestHeaders(): Record<string, string> {
+        return this.getTitleRequestBaseHeaders();
     }
 
     private getTitleRequestBaseHeaders(): Record<string, string> {
         return {
             Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         };
-    }
-
-    private async getCookieHeaderForUrl(url: string): Promise<string | null> {
-        const cookies = this.getElectronCookies();
-        if (!cookies) return null;
-
-        try {
-            const parsedUrl = new URL(url);
-            if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-                return null;
-            }
-
-            const matchingCookies = await cookies.get({ url: parsedUrl.href });
-            const cookiePairs = matchingCookies
-                .filter((cookie) => cookie.name.length > 0 && cookie.value.length > 0)
-                .map((cookie) => `${cookie.name}=${cookie.value}`);
-
-            return cookiePairs.length > 0 ? cookiePairs.join('; ') : null;
-        } catch {
-            return null;
-        }
     }
 
     private extractPageTitle(html: string, url: string): string | null {
