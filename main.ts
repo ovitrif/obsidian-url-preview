@@ -2060,6 +2060,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             : this.getEditorContextLink(editor, expectedUrl);
         if (!link) return;
 
+        // This path resolves the link from the raw text, so nothing else stops it from
+        // offering to rewrite a URL inside a fenced block or inline code — which would
+        // silently turn a command in a code sample into a Markdown link.
+        const editorView = this.editorViewForEditor(editor);
+        if (editorView && this.isRangeInsideCode(editorView, link.start, link.end)) return;
+
         this.convertLinkMenus.add(menu);
         const githubReference = this.getGitHubIssueReference(link.url);
         const isGitHubUrl = this.isGitHubUrl(link.url);
@@ -2239,6 +2245,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     // A title fetch can take seconds, and a leaf reuses its editor when another note opens in
     // it. Without pinning the file, the replacement could land in whatever note is showing now.
+    // The context-menu path only has an `Editor`, and the code check needs the CodeMirror
+    // view behind it. `cm` is the same object `fileForEditorTarget` matches on.
+    private editorViewForEditor(editor: Editor): EditorView | null {
+        const view = (editor as unknown as { cm?: EditorView }).cm;
+        return view instanceof EditorView ? view : null;
+    }
+
     private fileForEditorTarget(target: Editor | EditorView): TFile | null {
         let file: TFile | null = null;
         this.app.workspace.iterateAllLeaves((leaf) => {
@@ -2766,15 +2779,30 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 const latest = await this.readPreviewState(entry);
                 if (cancelled || latest.dirty || this.activePreview !== active ||
                     latest.x !== state.x || latest.y !== state.y || this.getPreviewFrameUrl(entry.controller) !== url) { cancel(); return; }
+                // readPreviewState only sees the guest page. The toolbar lives on this side,
+                // so a swap would destroy the address, size or zoom field being typed into.
+                if (entry.element.contains(entry.doc.activeElement)) { cancel(); return; }
                 observer.disconnect();
                 win.clearTimeout(timeout);
                 detachRefreshListeners();
                 cancelled = true;
                 entry.cancelRefresh = undefined;
+                // The popup can be expanded, resized or dragged while the clone loads, so the
+                // geometry to carry over is the one on screen now, not the opening snapshot.
+                const live = entry.element.getBoundingClientRect();
+                const restoreBounds = entry.restoreBounds;
+                const returnFocusTo = this.activePreview?.returnFocusTo;
                 this.cleanupActivePreview();
                 this.disposeCachedPreview(entry);
+                fresh.restoreBounds = restoreBounds;
+                // `bounds` only tells activateCachedPreview that the geometry is already set,
+                // so the clone still has to be moved onto the box it is replacing.
+                this.applyPreviewBounds(fresh.element,
+                    { left: live.left, top: live.top, width: live.width, height: live.height });
                 this.activateCachedPreview(fresh, active.link, active.link, active.sourceKey,
-                    { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height });
+                    { left: live.left, top: live.top, width: live.width, height: live.height });
+                this.updateExpandButton(fresh.element, Boolean(restoreBounds));
+                if (returnFocusTo && this.activePreview) this.activePreview.returnFocusTo = returnFocusTo;
             } catch { cancel(); }
         };
         const timeout = win.setTimeout(cancel, 30000);
@@ -4311,7 +4339,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (linkTarget.hasAttribute('data-href') ||
             linkTarget.closest('.internal-link, .cm-hmd-internal-link, .cm-hmd-barelink, .cm-link-alias')) return null;
 
-        const textLink = this.getMarkdownLinkByDisplayText(content, linkTarget);
+        const textLink = this.getMarkdownLinkByDisplayText(content, linkTarget,
+            editorView.posAtDOM(linkTarget));
         if (textLink && !this.isRangeInsideCode(editorView, textLink.start, textLink.end)) {
             return {
                 element: linkTarget,
@@ -4353,7 +4382,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return null;
     }
 
-    private getMarkdownLinkByDisplayText(content: string, element: HTMLElement): ParsedMarkdownLink | null {
+    private getMarkdownLinkByDisplayText(content: string, element: HTMLElement,
+        fallbackStart: number): ParsedMarkdownLink | null {
         const displayText = element.textContent?.trim();
         if (!displayText) return null;
 
@@ -4365,7 +4395,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         // A substring match used to be accepted here, which let a wikilink such as [[Design]]
         // resolve to an unrelated [Design docs](…) elsewhere in the note.
-        return this.getBareMarkdownUrl(displayText);
+        return this.getBareMarkdownUrl(displayText, fallbackStart);
     }
 
     private findParsedMarkdownLinkAtOffset(links: ParsedMarkdownLink[], offset: number): ParsedMarkdownLink | null {
@@ -4442,6 +4472,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         while ((match = urlRegex.exec(content)) !== null) {
             const start = match.index;
+            if (!this.hasBareUrlLeftBoundary(content, start)) continue;
+            if (this.isBareUrlInsideOtherConstruct(content, start)) continue;
             const text = this.trimBareUrlPunctuation(match[0]);
             const end = start + text.length;
             if (excludedRanges.some((range) => start >= range.start && end <= range.end)) continue;
@@ -4461,6 +4493,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
             const start = match.index + prefix.length;
             const end = start + text.length;
+            // '[' is a legal prefix for '[owner/repo#1]', but '[[' opens a wikilink, whose
+            // target is a note in this vault and never a GitHub reference.
+            if (content.slice(Math.max(0, start - 2), start) === '[[') continue;
+            if (this.isBareUrlInsideOtherConstruct(content, start)) continue;
             if (occupiedRanges.some((range) => start >= range.start && end <= range.end)) continue;
 
             const url = this.normalizeUrl(text);
@@ -4473,8 +4509,27 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return links.sort((a, b) => a.start - b.start);
     }
 
+    // The scheme-less 'github.com/' alternative would otherwise start matching inside a
+    // longer token, so 'gist.github.com/o/x' resolved to 'https://github.com/o/x' — a
+    // different page than the one the note names.
+    private hasBareUrlLeftBoundary(content: string, start: number): boolean {
+        return start === 0 || !/[A-Za-z0-9./@-]/.test(content[start - 1]);
+    }
+
+    // A URL that is a markdown destination, a link reference definition or an HTML attribute
+    // value already belongs to another construct. Offering to convert it rewrites something
+    // the note did not ask to have rewritten — an image embed stops rendering.
+    private isBareUrlInsideOtherConstruct(content: string, start: number): boolean {
+        if (content.slice(Math.max(0, start - 2), start) === '](') return true;
+        const quote = content[start - 1];
+        if ((quote === '"' || quote === "'") && content[start - 2] === '=') return true;
+        const lineStart = content.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+        return /^\s{0,3}\[[^\]]*\]:\s*$/.test(content.slice(lineStart, start));
+    }
+
     private trimBareUrlPunctuation(candidate: string): string {
-        let trimmed = candidate.replace(/[.,;:!?\]}]+$/g, '');
+        // '*', '`' and '~' close emphasis, code and strikethrough around the URL.
+        let trimmed = candidate.replace(/[.,;:!?\]}*`~]+$/g, '');
 
         // Keep parens that the URL itself opened, drop the ones that close surrounding prose.
         while (trimmed.endsWith(')')) {
@@ -4484,7 +4539,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 else if (char === ')') depth--;
             }
             if (depth >= 0) break;
-            trimmed = trimmed.slice(0, -1).replace(/[.,;:!?\]}]+$/g, '');
+            trimmed = trimmed.slice(0, -1).replace(/[.,;:!?\]}*`~]+$/g, '');
         }
 
         return trimmed;
@@ -4552,11 +4607,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return this.normalizeUrl(trimmed.split(/\s+/)[0]);
     }
 
-    private getBareMarkdownUrl(displayText: string): ParsedMarkdownLink | null {
+    // `start` is where the text sits in the document. Numbering the range from the display
+    // text instead made callers ask whether the note's first characters were inside code.
+    private getBareMarkdownUrl(displayText: string, start: number): ParsedMarkdownLink | null {
         const url = this.normalizeUrl(displayText);
         if (!url) return null;
 
-        return this.createBareMarkdownUrlLink(0, displayText.length, displayText, url);
+        return this.createBareMarkdownUrlLink(start, start + displayText.length, displayText, url);
     }
 
     private getBareMarkdownUrlAtOffset(content: string, offset: number): ParsedMarkdownLink | null {
