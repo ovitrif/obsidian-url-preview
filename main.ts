@@ -118,6 +118,9 @@ interface PreviewFrameController {
     cleanupKeyboard?: () => void;
     muted?: boolean;
     currentUrl: string;
+    // Where the page the entry was opened for settled after its redirects. A cached entry
+    // still stands for the link that opened it only while it is showing this.
+    resolvedUrl?: string;
     element: PreviewFrameElement;
     fallbackHistory: string[];
     fallbackHistoryIndex: number;
@@ -523,7 +526,6 @@ export default class LinkPreviewPlugin extends Plugin {
     private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
     private documentScopes = new Map<Document, Component>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
-    private lastPreviewChromeSignature: string | undefined;
     private previewRequest = 0;
     private settingsWrite: Promise<void> = Promise.resolve();
     private unloaded = false;
@@ -1471,9 +1473,7 @@ export default class LinkPreviewPlugin extends Plugin {
             const descriptionShell = card.createDiv('url-preview-github-hover-card-description-shell');
             descriptionShell.createDiv({ cls: 'url-preview-github-hover-card-description', text: data.description });
         } else if (options.showDescriptionSkeleton) {
-            const descriptionShell = card.createDiv(
-                'url-preview-github-hover-card-description-shell is-skeleton'
-            );
+            const descriptionShell = card.createDiv('url-preview-github-hover-card-description-shell');
             const skeleton = descriptionShell.createDiv({
                 cls: 'url-preview-github-hover-card-description-skeleton',
                 text: 'mmmmmmmmm mmmmmmmm mmmmmmmmm mmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmm mmmmmmmm mmmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmmmm mmmmmmm mmmmmmmm mmmmmmmmm mmmmmmmm mmmmmmm mmmmmmmmm mmmmmmmm mmmmmmmmmm',
@@ -1508,14 +1508,9 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private measureGitHubHoverCard(card: HTMLElement): DOMRect {
-        const wasMeasuring = card.classList.contains('is-measuring');
-        card.addClass('is-measuring');
-        const rect = card.getBoundingClientRect();
-        if (!wasMeasuring) {
-            card.removeClass('is-measuring');
-        }
-
-        return rect;
+        // The card's fade is an opacity transition, which does not affect layout, so the box
+        // can be read directly. The class this used to set styled nothing.
+        return card.getBoundingClientRect();
     }
 
     private createGitHubHoverCardFallbackData(
@@ -2503,6 +2498,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             }
             this.navigatePreviewFrame(panel.controller, url);
             panel.url = url;
+            panel.requestUrl = url;
+            panel.controller.resolvedUrl = undefined;
         }
         panel.dock?.updateBounds();
     }
@@ -2510,8 +2507,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private showFloatingPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         const doc = link.ownerDocument;
         const cached = [...this.previewCache.values()].find(entry =>
-            entry.doc === doc && (entry.url === url || entry.requestUrl === url) &&
-            entry.element.isConnected && !entry.dock);
+            entry.doc === doc && entry.element.isConnected && !entry.dock && (
+                entry.url === url ||
+                // A redirect leaves the entry on a different URL than the link asked for, so
+                // the link's own URL matches too — but only while the page is still the one
+                // that load settled on. Once the user browses elsewhere the entry stands for
+                // that page, not for this link.
+                (entry.requestUrl === url && entry.url === entry.controller.resolvedUrl)));
         const entry = cached ?? this.createCachedPreview(link, url);
         this.activateCachedPreview(entry, link, hoverElement, sourceKey);
         if (cached) void this.refreshCachedPreview(entry);
@@ -2557,7 +2559,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             }
         });
 
-        if (this.settings.allowResize) this.createResizeHandles(previewEl);
+        this.createResizeHandles(previewEl);
         doc.body.appendChild(previewEl);
         this.applyPreviewViewportProps(previewEl, url);
         this.navigatePreviewFrame(frameController, url);
@@ -2790,7 +2792,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                     latest.x !== state.x || latest.y !== state.y || this.getPreviewFrameUrl(entry.controller) !== url) { cancel(); return; }
                 // readPreviewState only sees the guest page. The toolbar lives on this side,
                 // so a swap would destroy the address, size or zoom field being typed into.
-                if (entry.element.contains(entry.doc.activeElement)) { cancel(); return; }
+                // Only those: focus sits on a toolbar button for the whole life of a preview
+                // opened from the command, which would otherwise never refresh.
+                const focused = entry.doc.activeElement;
+                if (focused instanceof HTMLInputElement && entry.element.contains(focused)) { cancel(); return; }
                 observer.disconnect();
                 win.clearTimeout(timeout);
                 detachRefreshListeners();
@@ -2973,6 +2978,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             ).then((didReveal) => {
                 if (!didReveal || !frame.isConnected) return;
 
+                if (!hasRevealedInitialPage) controller.resolvedUrl = this.getPreviewFrameUrl(controller);
                 hasRevealedInitialPage = true;
             });
         };
@@ -3339,7 +3345,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (removedObsoleteField) {
             await this.saveSettings();
         }
-        this.lastPreviewChromeSignature = this.previewChromeSignature();
     }
 
     async saveSettings() {
@@ -3353,22 +3358,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.settingsWrite = write.catch(() => undefined);
         await write;
         if (this.unloaded) return;
-        // Toolbar buttons and resize handles are built once per preview, so a cached page
-        // would keep the old chrome until it aged out. Drop the idle ones instead.
-        const chrome = this.previewChromeSignature();
-        if (this.lastPreviewChromeSignature !== undefined && this.lastPreviewChromeSignature !== chrome) {
-            for (const entry of [...this.previewCache.values()]) {
-                if (entry.dock || entry.element === this.activePreview?.element) continue;
-                this.disposeCachedPreview(entry);
-            }
-        }
-        this.lastPreviewChromeSignature = chrome;
         for (const doc of this.handledDocuments) this.applyDisplaySettings(doc);
-    }
-
-    private previewChromeSignature(): string {
-        const { showOpenInBrowser, showCloseButton, allowResize } = this.settings;
-        return `${showOpenInBrowser}|${showCloseButton}|${allowResize}`;
     }
 
     private applyDisplaySettings(doc: Document) {
@@ -3376,6 +3366,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         doc.body.addClass('url-preview-inline-links');
         doc.body.toggleClass('url-preview-hide-external-link-icon', !this.settings.showInlineExternalLinkIcon);
         doc.body.toggleClass('url-preview-hide-loading-indicators', !this.settings.showLoadingIndicators);
+        doc.body.toggleClass('url-preview-hide-resize', !this.settings.allowResize);
+        doc.body.toggleClass('url-preview-hide-open-in-browser', !this.settings.showOpenInBrowser);
+        doc.body.toggleClass('url-preview-hide-close-button', !this.settings.showCloseButton);
     }
 
     onunload() {
@@ -3611,7 +3604,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const domain = this.getPreviewDomain(url);
         if (!domain) return;
 
-        this.settings.domainZoomLevels[domain] = this.clampZoomPercent(value);
+        const clamped = this.clampZoomPercent(value);
+        // Storing the default for every domain the user ever zoomed and reset grows the file
+        // for nothing, and there is no UI that lists or prunes it.
+        if (clamped === this.clampZoomPercent(this.getDefaultDomainZoomPercent(url))) delete this.settings.domainZoomLevels[domain];
+        else this.settings.domainZoomLevels[domain] = clamped;
         await this.saveSettings();
     }
 
@@ -3650,14 +3647,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const win = container.ownerDocument.defaultView ?? window;
         this.createNavigationControls(buttons, container, frameController);
 
-        if (this.settings.allowResize) {
-            this.createSizeControls(buttons, container);
-        }
+        // Every optional control is built once and hidden with a body class, so changing
+        // the setting takes effect on previews that are already open, including a docked one.
+        this.createSizeControls(buttons, container);
 
         this.createZoomControls(buttons, container, () => this.getPreviewFrameUrl(frameController));
 
 
-        if (this.settings.allowResize) {
+        {
             const resizeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-expand-button' });
             setIcon(resizeBtn, 'maximize-2');
             this.setToolbarTooltip(resizeBtn, 'Expand preview');
@@ -3695,8 +3692,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.dockPreview(container);
         });
 
-        if (this.settings.showOpenInBrowser) {
-            const openBtn = buttons.createEl('button', { cls: 'clickable-icon' });
+        {
+            const openBtn = buttons.createEl('button', { cls: 'clickable-icon preview-open-button' });
             setIcon(openBtn, 'external-link');
             this.setToolbarTooltip(openBtn, 'Open in external browser');
             openBtn.addEventListener('click', (e) => {
@@ -3705,8 +3702,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             });
         }
 
-        if (this.settings.showCloseButton) {
-            const closeBtn = buttons.createEl('button', { cls: 'clickable-icon' });
+        {
+            const closeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-close-button' });
             setIcon(closeBtn, 'x');
             this.setToolbarTooltip(closeBtn, 'Close preview');
             closeBtn.addEventListener('click', (e) => {
@@ -3969,8 +3966,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.applyPreviewViewportProps(previewEl, url);
         };
         const applyInputZoom = () => {
-            const value = Number(zoomInput.value);
-            if (!isNaN(value)) {
+            // `Number('')` is 0, which clamps to the 50% floor and stores it for the domain.
+            const typed = zoomInput.value.trim();
+            const value = Number(typed);
+            if (typed && Number.isFinite(value)) {
                 void applyZoom(value);
             } else {
                 updateZoomInput();
@@ -4486,7 +4485,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             const start = match.index;
             if (!this.hasBareUrlLeftBoundary(content, start)) continue;
             if (this.isBareUrlInsideOtherConstruct(content, start)) continue;
-            const text = this.trimBareUrlPunctuation(match[0]);
+            const text = this.trimBareUrlPunctuation(this.unwrapEmphasis(content, start, match[0]));
             const end = start + text.length;
             if (excludedRanges.some((range) => start >= range.start && end <= range.end)) continue;
 
@@ -4507,7 +4506,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             const end = start + text.length;
             // '[' is a legal prefix for '[owner/repo#1]', but '[[' opens a wikilink, whose
             // target is a note in this vault and never a GitHub reference.
-            if (content.slice(Math.max(0, start - 2), start) === '[[') continue;
+            if (this.isInsideWikilink(content, start)) continue;
             if (this.isBareUrlInsideOtherConstruct(content, start)) continue;
             if (occupiedRanges.some((range) => start >= range.start && end <= range.end)) continue;
 
@@ -4536,12 +4535,34 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const quote = content[start - 1];
         if ((quote === '"' || quote === "'") && content[start - 2] === '=') return true;
         const lineStart = content.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
-        return /^\s{0,3}\[[^\]]*\]:\s*$/.test(content.slice(lineStart, start));
+        const line = content.slice(lineStart, start);
+        // `[^1]: https://…` is a footnote whose body is an ordinary link, not a definition.
+        if (/^\s{0,3}\[(?!\^)[^\]]*\]:\s*$/.test(line)) return true;
+        return /<[^<>]*=\s*["']?$/.test(line);
+    }
+
+    // '**url**' and its siblings close with the marker they opened with, which the trailing
+    // trim cannot know about: 'https://github.com/search?q=foo*' legitimately ends in one.
+    private unwrapEmphasis(content: string, start: number, candidate: string): string {
+        const opener = content.slice(Math.max(0, start - 2), start);
+        for (const marker of ['**', '~~', '__', '*', '`', '~', '_']) {
+            if (opener.endsWith(marker) && candidate.endsWith(marker)) {
+                return candidate.slice(0, -marker.length);
+            }
+        }
+        return candidate;
+    }
+
+    // The shorthand match starts after the last space, so two characters of context cannot
+    // see the '[[' of a wikilink whose note name contains one.
+    private isInsideWikilink(content: string, start: number): boolean {
+        const lineStart = content.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+        const line = content.slice(lineStart, start);
+        return line.lastIndexOf('[[') > line.lastIndexOf(']]');
     }
 
     private trimBareUrlPunctuation(candidate: string): string {
-        // '*', '`' and '~' close emphasis, code and strikethrough around the URL.
-        let trimmed = candidate.replace(/[.,;:!?\]}*`~]+$/g, '');
+        let trimmed = candidate.replace(/[.,;:!?\]}]+$/g, '');
 
         // Keep parens that the URL itself opened, drop the ones that close surrounding prose.
         while (trimmed.endsWith(')')) {
@@ -4551,7 +4572,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 else if (char === ')') depth--;
             }
             if (depth >= 0) break;
-            trimmed = trimmed.slice(0, -1).replace(/[.,;:!?\]}*`~]+$/g, '');
+            trimmed = trimmed.slice(0, -1).replace(/[.,;:!?\]}]+$/g, '');
         }
 
         return trimmed;
@@ -5125,7 +5146,8 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         });
                     toggle.setDisabled(!isResizeEnabled);
                 });
-            if (hasPersistedSize && isResizeEnabled) {
+            // The size is still on disk when resize is off, and this is the only way to clear it.
+            if (hasPersistedSize) {
                 setting.addButton(button => button
                     .setButtonText('Reset')
                     .onClick(async () => {

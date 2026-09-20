@@ -457,12 +457,6 @@ body.url-preview-hide-external-link-icon .external-link {
     border-top: 1px solid var(--background-modifier-border);
 }
 
-.url-preview-github-hover-card.is-measuring .url-preview-github-hover-card-description-shell {
-    max-height: none;
-    animation: none;
-    opacity: 1;
-}
-
 .url-preview-github-hover-card-description,
 .url-preview-github-hover-card-description-skeleton {
     display: -webkit-box;
@@ -861,4 +855,14 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
     .hover-popup::after {
         transition: none;
     }
+}
+
+/* Optional toolbar controls and resize handles are always built, so a settings change
+   reaches a preview that is already open — including one docked in the side panel. */
+body.url-preview-hide-resize .hover-popup[data-preview-url] .preview-size-controls,
+body.url-preview-hide-resize .hover-popup[data-preview-url] .preview-expand-button,
+body.url-preview-hide-resize .hover-popup[data-preview-url] > .resize-handle,
+body.url-preview-hide-open-in-browser .hover-popup[data-preview-url] .preview-open-button,
+body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close-button {
+    display: none;
 }
