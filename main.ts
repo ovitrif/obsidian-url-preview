@@ -521,7 +521,7 @@ export default class LinkPreviewPlugin extends Plugin {
         sourceKey?: string,
         returnFocusTo?: HTMLElement
     };
-    private lastEditorEscape = 0;
+    private editorEscapeArmed = false;
     private lastMouseX = 0;
     private lastMouseY = 0;
     private lastMoveX = 0;
@@ -797,7 +797,13 @@ export default class LinkPreviewPlugin extends Plugin {
             // from a bubble listener with no such check, so dismissing the palette — or, in
             // Vim mode, every exit from insert mode — closed it too.
             scope.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
-                if (e.key !== 'Escape' || e.defaultPrevented) return;
+                // Anything else typed in between ends the pairing, and a held key repeats
+                // roughly every 30 ms, which must not count as a deliberate second press.
+                if (e.key !== 'Escape') {
+                    this.editorEscapeArmed = false;
+                    return;
+                }
+                if (e.defaultPrevented || e.repeat) return;
                 const focused = doc.activeElement;
                 // The toolbar's address, size and zoom fields implement Escape themselves
                 // (revert and blur). Capture phase runs before their own listeners and is
@@ -813,14 +819,15 @@ export default class LinkPreviewPlugin extends Plugin {
                     // this capture listener and `defaultPrevented` is still false here —
                     // measured on 1.13.7. Ask for a second Escape instead, the way the
                     // shortcut inside a previewed page already does.
-                    if (this.isVimEscapeInEditor(focused)) {
-                        const now = Date.now();
-                        if (!this.lastEditorEscape || now - this.lastEditorEscape > 500) {
-                            this.lastEditorEscape = now;
-                            return;
-                        }
+                    // The first Escape leaves insert mode; a second one, with nothing typed
+                    // in between, closes the preview. A time window was wrong here: pressing
+                    // Escape at a normal pace only ever re-armed it, so the preview never
+                    // closed at all.
+                    if (this.isVimEscapeInEditor(focused) && !this.editorEscapeArmed) {
+                        this.editorEscapeArmed = true;
+                        return;
                     }
-                    this.lastEditorEscape = 0;
+                    this.editorEscapeArmed = false;
                     this.cleanupActivePreview();
                     return;
                 }
@@ -4843,12 +4850,16 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         for (let index = start; index < limit; index++) {
             const char = content[index];
 
-            if (char === '\\') {
+            // A backslash escapes the next character, but never a line ending: letting it
+            // consume the first newline of a paragraph break hid the break from the check
+            // below, and the range then spanned two paragraphs — which "Use page title as
+            // link text" would rewrite, deleting everything in between.
+            if (char === '\\' && content[index + 1] !== '\n' && content[index + 1] !== '\r') {
                 index++;
                 continue;
             }
 
-            if (char === '\n' && content[index + 1] === '\n') return -1;
+            if (this.startsBlankLine(content, index)) return -1;
 
             if (char === '[') {
                 depth++;
@@ -4872,6 +4883,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     // lookup was itself unbounded, and it ran for every `[` in the note — so a long run
     // without a blank line, which is what a checkbox list or a table is, was quadratic all
     // over again: an 82 KB list of tasks cost 20 ms per keystroke and a 166 KB one 52 ms.
+    // `\n\n`, and the `\r\n\r\n` a Windows-authored or autocrlf note carries.
+    private startsBlankLine(content: string, index: number): boolean {
+        if (content[index] !== '\n') return false;
+        const next = content[index + 1] === '\r' ? index + 2 : index + 1;
+        return content[next] === '\n';
+    }
+
     private static readonly MAX_LINK_TEXT = 1024;
     private static readonly MAX_LINK_DESTINATION = 16384;
 
@@ -4882,12 +4900,16 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         for (let index = start; index < limit; index++) {
             const char = content[index];
 
-            if (char === '\\') {
+            // A backslash escapes the next character, but never a line ending: letting it
+            // consume the first newline of a paragraph break hid the break from the check
+            // below, and the range then spanned two paragraphs — which "Use page title as
+            // link text" would rewrite, deleting everything in between.
+            if (char === '\\' && content[index + 1] !== '\n' && content[index + 1] !== '\r') {
                 index++;
                 continue;
             }
 
-            if (char === '\n' && content[index + 1] === '\n') return -1;
+            if (this.startsBlankLine(content, index)) return -1;
 
             if (char === '(') {
                 depth++;
