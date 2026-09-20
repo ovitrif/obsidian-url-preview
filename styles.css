@@ -714,7 +714,9 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
     visibility: hidden;
 }
 
-.is-page-loading .preview-loading.is-hidden + .preview-page-loading {
+/* Only a preview the user can see may reveal its spinner: `visibility` is inherited, so
+   without this scope a hidden clone's indicator would paint over the live preview. */
+.hover-popup:not(.is-refreshing):not(.is-cached).is-page-loading .preview-loading.is-hidden + .preview-page-loading {
     visibility: visible;
 }
 
@@ -847,9 +849,7 @@ body.url-preview-hide-loading-indicators .preview-page-loading {
     .url-preview-github-hover-card-description-skeleton,
     .url-preview-github-hover-card-description,
     .preview-loading::after,
-    .preview-page-loading::after,
-    .preview-loading,
-    .preview-page-loading {
+    .preview-page-loading::after {
         animation: none;
     }
 

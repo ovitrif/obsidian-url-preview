@@ -520,7 +520,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private documentScopes = new Map<Document, Component>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
     private lastPreviewChromeSignature: string | undefined;
-    previewRequest = 0;
+    private previewRequest = 0;
     private unloaded = false;
     private editorLinkCache = new WeakMap<EditorView, { doc: unknown; links: ParsedMarkdownLink[] }>();
 
@@ -728,17 +728,27 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
-                } else if (e.key === 'Escape') {
-                    // A docked panel is not the active preview, so it needs its own exit.
-                    for (const entry of [...this.previewCache.values()]) {
-                        if (entry.doc === doc && entry.dock) entry.dock.close();
-                    }
                 }
                 if (e.key === 'Escape') {
                     this.hideGitHubHoverCard(doc);
                     return;
                 }
             });
+            // A docked panel is not the active preview, so Escape needs a separate exit — in the
+            // capture phase, because Obsidian's keymap marks every Escape handled by the time a
+            // bubble listener sees it. At capture, `defaultPrevented` still distinguishes an
+            // Escape a modal, suggester or palette has claimed from one nothing wants.
+            scope.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
+                if (e.key !== 'Escape' || e.defaultPrevented || this.activePreview) return;
+                const focused = doc.activeElement;
+                for (const entry of [...this.previewCache.values()]) {
+                    if (entry.doc !== doc || !entry.dock) continue;
+                    if (entry.dock.host.contains(focused) || entry.element.contains(focused)) {
+                        entry.dock.close();
+                    }
+                }
+            }, { capture: true });
+
             const win = doc.defaultView;
             if (win) {
                 scope.registerDomEvent(win, 'blur', () => {
@@ -769,7 +779,7 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 this.removeInlinePreviewControls(workspaceWindow.doc);
                 this.removeGitHubHoverCard(workspaceWindow.doc);
-                for (const entry of this.previewCache.values()) {
+                for (const entry of [...this.previewCache.values()]) {
                     if (entry.doc === workspaceWindow.doc) this.disposeCachedPreview(entry);
                 }
                 this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
@@ -833,7 +843,10 @@ export default class LinkPreviewPlugin extends Plugin {
         for (const link of links) {
             if (!(link instanceof HTMLAnchorElement)) continue;
             // Kanban cards render their own number line; badges there only crowd the card.
-            if (link.closest('.hover-popup, .url-preview-inline-controls, .cm-editor, .kanban-plugin')) {
+            // An editor link's badge is a CodeMirror widget owned by the editor extension.
+            // Removing it here would make CodeMirror rebuild it, which re-wakes this observer.
+            if (link.closest('.cm-editor')) continue;
+            if (link.closest('.hover-popup, .url-preview-inline-controls, .kanban-plugin')) {
                 this.removeGitHubPullRequestBadge(link);
                 continue;
             }
@@ -2349,6 +2362,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private async showPreviewInSidePanel(request: number, panel: CachedPreview, link: HTMLElement, url: string,
         hoverElement: HTMLElement, sourceKey?: string) {
+        const dockAtStart = panel.dock;
         if (this.getPreviewFrameUrl(panel.controller) !== url) {
             let dirty = false;
             try {
@@ -2359,6 +2373,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             // Reading the panel's state is a round trip to the guest, so a second click can
             // land while this one is still waiting. The newest click owns the preview.
             if (request !== this.previewRequest) return;
+            // The panel the click targeted is gone because the user dismissed it; that is a
+            // cancellation, not a reason to pop a floating preview they did not ask for.
+            if (panel.dock !== dockAtStart) return;
             if (!panel.dock || !panel.element.isConnected) {
                 this.showFloatingPreview(link, url, hoverElement, sourceKey);
                 return;
@@ -2662,8 +2679,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     hideDockPreview(entry: CachedPreview, trim = true) {
-        // Anything still waiting on this panel asked for the panel, not a popup.
-        this.previewRequest++;
         entry.url = this.getPreviewFrameUrl(entry.controller);
         entry.dock = undefined;
         entry.element.removeClass('is-docked');
@@ -4760,15 +4775,21 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setPlaceholder('300')
                         .setValue(String(this.plugin.settings.maxPreviewHeight))
                         .onChange(async (value) => {
+                            // Only a value that already makes sense is stored. Rewriting the field
+                            // here would move the caret to the end and mangle what is being typed.
                             const height = Number(value);
-                            if (!value.trim() || !Number.isFinite(height)) return;
-                            const clamped = Math.max(MIN_PREVIEW_HEIGHT, Math.round(height));
-                            if (String(clamped) !== value) text.setValue(String(clamped));
-                            this.plugin.settings.maxPreviewHeight = clamped;
+                            if (!value.trim() || !Number.isFinite(height) || height < MIN_PREVIEW_HEIGHT) return;
+                            this.plugin.settings.maxPreviewHeight = Math.round(height);
                             this.plugin.settings.persistedWidth = undefined;
                             this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();
                         }));
+                setting.controlEl.querySelectorAll('input').forEach((input) => {
+                    // Once the field is left, show what is actually stored.
+                    input.addEventListener('blur', () => {
+                        input.value = String(this.plugin.settings.maxPreviewHeight);
+                    });
+                });
             })
             .addSetting(setting => {
                 setting
@@ -4778,15 +4799,21 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                         .setPlaceholder('400')
                         .setValue(String(this.plugin.settings.maxPreviewWidth))
                         .onChange(async (value) => {
+                            // Only a value that already makes sense is stored. Rewriting the field
+                            // here would move the caret to the end and mangle what is being typed.
                             const width = Number(value);
-                            if (!value.trim() || !Number.isFinite(width)) return;
-                            const clamped = Math.max(MIN_PREVIEW_WIDTH, Math.round(width));
-                            if (String(clamped) !== value) text.setValue(String(clamped));
-                            this.plugin.settings.maxPreviewWidth = clamped;
+                            if (!value.trim() || !Number.isFinite(width) || width < MIN_PREVIEW_WIDTH) return;
+                            this.plugin.settings.maxPreviewWidth = Math.round(width);
                             this.plugin.settings.persistedWidth = undefined;
                             this.plugin.settings.persistedHeight = undefined;
                             await this.plugin.saveSettings();
                         }));
+                setting.controlEl.querySelectorAll('input').forEach((input) => {
+                    // Once the field is left, show what is actually stored.
+                    input.addEventListener('blur', () => {
+                        input.value = String(this.plugin.settings.maxPreviewWidth);
+                    });
+                });
             });
 
         const isResizeEnabled = this.plugin.settings.allowResize;
