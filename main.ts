@@ -4707,9 +4707,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private isUnusablePageTitle(title: string, url: string): boolean {
         // Title requests are anonymous, so a gated page answers with 200 and its login page.
         // Writing that title into a note is worse than reporting that none could be found.
+        // Matched as a whole title, not as a prefix, so an article about signing in survives.
         const trimmed = title.trim();
-        if (/^(log ?in|sign ?in|sign ?up|register|authentication required)\b/i.test(trimmed)) return true;
-        if (/\b(log ?in|sign ?in) to continue\b/i.test(trimmed)) return true;
+        const withoutSiteSuffix = trimmed.replace(/\s*[·|\u2013\u2014-]\s*[^·|\u2013\u2014-]{1,40}$/, '').trim();
+        const loginTitle = /^(log ?in|sign ?in|sign ?up|register|create an account|authentication required)$/i;
+        if (loginTitle.test(trimmed) || loginTitle.test(withoutSiteSuffix)) return true;
+        if (/^(log ?in|sign ?in|sign ?up) to (continue|your account|\S+)$/i.test(trimmed)) return true;
         if (!this.isGitHubUrl(url)) return false;
 
         return /^(sign in to github|join github|github)$/i.test(title);
