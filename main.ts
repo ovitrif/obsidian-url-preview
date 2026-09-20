@@ -8,6 +8,7 @@ import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import {
     App,
+    Component,
     Editor,
     MarkdownView,
     Menu,
@@ -504,6 +505,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private githubPullRequestBadgeVersion = 0;
     private githubHoverCards = new Map<Document, GitHubHoverCardState>();
     private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
+    private documentScopes = new Map<Document, Component>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
     private lastPreviewChromeSignature: string | undefined;
     private editorLinkCache?: { doc: unknown; links: ParsedMarkdownLink[] };
@@ -658,23 +660,29 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private registerGlobalHandler() {
+        // Per-document handlers live on their own child component: `registerDomEvent` only
+        // unbinds at plugin unload, which would retain every closed popout's document.
         const handleWindow = (doc: Document) => {
             if (this.handledDocuments.has(doc)) return;
             this.handledDocuments.add(doc);
             this.applyDisplaySettings(doc);
 
-            this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
+            const scope = new Component();
+            this.addChild(scope);
+            this.documentScopes.set(doc, scope);
+
+            scope.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
             });
-            this.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
-            this.registerDomEvent(doc, 'click', (e: MouseEvent) => {
+            scope.registerDomEvent(doc, 'contextmenu', (e: MouseEvent) => this.captureEditorContextMenuLink(e));
+            scope.registerDomEvent(doc, 'click', (e: MouseEvent) => {
                 if (this.isClickInsideGitHubHoverCard(doc, e)) return;
 
                 this.hideGitHubHoverCard(doc);
                 this.handleLinkClick(e);
             }, { capture: true });
-            this.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
+            scope.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
                 const dx = Math.abs(e.clientX - this.lastMouseX);
                 const dy = Math.abs(e.clientY - this.lastMouseY);
                 const didMouseMove = dx > 0 || dy > 0;
@@ -685,7 +693,7 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.updateGitHubHoverCardFromEvent(e);
                 }
             });
-            this.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
+            scope.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (this.isSourceModeToggleEvent(e)) {
                     this.hideEditorHoverUi(doc);
                     const win = doc.defaultView ?? window;
@@ -701,7 +709,7 @@ export default class LinkPreviewPlugin extends Plugin {
             });
             const win = doc.defaultView;
             if (win) {
-                this.registerDomEvent(win, 'blur', () => {
+                scope.registerDomEvent(win, 'blur', () => {
                     this.hideGitHubHoverCard(doc);
                 });
             }
@@ -733,6 +741,11 @@ export default class LinkPreviewPlugin extends Plugin {
                     if (entry.doc === workspaceWindow.doc) this.disposeCachedPreview(entry);
                 }
                 this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
+                const scope = this.documentScopes.get(workspaceWindow.doc);
+                if (scope) {
+                    this.removeChild(scope);
+                    this.documentScopes.delete(workspaceWindow.doc);
+                }
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
         );
