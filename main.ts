@@ -741,9 +741,16 @@ export default class LinkPreviewPlugin extends Plugin {
             scope.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 if (e.key !== 'Escape' || e.defaultPrevented || this.activePreview) return;
                 const focused = doc.activeElement;
+                // The toolbar's address, size and zoom fields implement Escape themselves
+                // (revert and blur). Capture phase runs before their own listeners and is
+                // immune to their stopPropagation, so they have to be excluded here.
+                if (focused?.closest('.preview-buttons')) return;
+                // Focus in the note is not a request to close the panel — Escape is an
+                // ordinary editing key there, and a per-keystroke idiom in Vim mode.
+                const unfocused = !focused || focused === doc.body;
                 for (const entry of [...this.previewCache.values()]) {
                     if (entry.doc !== doc || !entry.dock) continue;
-                    if (entry.dock.host.contains(focused) || entry.element.contains(focused)) {
+                    if (unfocused || entry.element.contains(focused) || entry.dock.divider.contains(focused)) {
                         entry.dock.close();
                     }
                 }
@@ -2887,8 +2894,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                     return;
                 }
                 const now = Date.now();
-                if (lastEscape && now - lastEscape <= 500 && this.activePreview?.element === previewEl) {
-                    this.cleanupActivePreview();
+                if (lastEscape && now - lastEscape <= 500) {
+                    if (this.activePreview?.element === previewEl) {
+                        this.cleanupActivePreview();
+                    } else {
+                        // A docked panel is never the active preview; close it the same way.
+                        this.previewCache.get(previewEl)?.dock?.close();
+                    }
                 } else {
                     lastEscape = now;
                 }
@@ -4785,8 +4797,19 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                             await this.plugin.saveSettings();
                         }));
                 setting.controlEl.querySelectorAll('input').forEach((input) => {
-                    // Once the field is left, show what is actually stored.
+                    // Leaving the field commits what is in it, clamped, rather than discarding
+                    // a value below the minimum. The field then shows what is actually stored.
                     input.addEventListener('blur', () => {
+                        const typed = Number(input.value);
+                        if (input.value.trim() && Number.isFinite(typed) && typed > 0) {
+                            const clamped = Math.max(MIN_PREVIEW_HEIGHT, Math.round(typed));
+                            if (clamped !== this.plugin.settings.maxPreviewHeight) {
+                                this.plugin.settings.maxPreviewHeight = clamped;
+                                this.plugin.settings.persistedWidth = undefined;
+                                this.plugin.settings.persistedHeight = undefined;
+                                void this.plugin.saveSettings();
+                            }
+                        }
                         input.value = String(this.plugin.settings.maxPreviewHeight);
                     });
                 });
@@ -4809,8 +4832,19 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                             await this.plugin.saveSettings();
                         }));
                 setting.controlEl.querySelectorAll('input').forEach((input) => {
-                    // Once the field is left, show what is actually stored.
+                    // Leaving the field commits what is in it, clamped, rather than discarding
+                    // a value below the minimum. The field then shows what is actually stored.
                     input.addEventListener('blur', () => {
+                        const typed = Number(input.value);
+                        if (input.value.trim() && Number.isFinite(typed) && typed > 0) {
+                            const clamped = Math.max(MIN_PREVIEW_WIDTH, Math.round(typed));
+                            if (clamped !== this.plugin.settings.maxPreviewWidth) {
+                                this.plugin.settings.maxPreviewWidth = clamped;
+                                this.plugin.settings.persistedWidth = undefined;
+                                this.plugin.settings.persistedHeight = undefined;
+                                void this.plugin.saveSettings();
+                            }
+                        }
                         input.value = String(this.plugin.settings.maxPreviewWidth);
                     });
                 });
