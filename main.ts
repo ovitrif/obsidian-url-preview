@@ -134,7 +134,11 @@ const PREVIEW_CACHE_LIMIT = 5;
 const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface CachedPreview {
+    // `url` follows the page as it navigates and redirects, so on its own it stops matching
+    // the link that opened the preview. `requestUrl` is what that link asked for and never
+    // changes, and a lookup accepts either.
     url: string;
+    requestUrl: string;
     doc: Document;
     element: HTMLElement;
     controller: PreviewFrameController;
@@ -634,7 +638,7 @@ export default class LinkPreviewPlugin extends Plugin {
             to: Math.max(from + 1, to),
             enter: (node) => {
                 if (insideCode) return false;
-                if (/(^|[-_])(inline-code|codeblock|comment)/i.test(node.name)) {
+                if (/(^|[-_])(inline-code|codeblock|comment|frontmatter)/i.test(node.name)) {
                     insideCode = true;
                     return false;
                 }
@@ -2506,7 +2510,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private showFloatingPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         const doc = link.ownerDocument;
         const cached = [...this.previewCache.values()].find(entry =>
-            entry.doc === doc && entry.url === url && entry.element.isConnected && !entry.dock);
+            entry.doc === doc && (entry.url === url || entry.requestUrl === url) &&
+            entry.element.isConnected && !entry.dock);
         const entry = cached ?? this.createCachedPreview(link, url);
         this.activateCachedPreview(entry, link, hoverElement, sourceKey);
         if (cached) void this.refreshCachedPreview(entry);
@@ -2518,7 +2523,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect, doc);
         const frameController = this.createPreviewFrame(doc, url);
-        const entry: CachedPreview = { url, doc, element: previewEl, controller: frameController };
+        const entry: CachedPreview = { url, requestUrl: url, doc, element: previewEl, controller: frameController };
 
         this.createButtons(previewEl, frameController);
 
@@ -2544,6 +2549,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         });
 
         previewEl.addEventListener('mouseleave', () => {
+            // A cached popup stays in the document, so its mouseleave can fire while a
+            // different preview is the active one — and the timer closes whichever is.
+            if (this.activePreview?.element !== previewEl) return;
             if (!entry.dock && !this.settings.stickyPopup) {
                 this.startCleanupTimer();
             }
@@ -2714,6 +2722,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const url = this.getPreviewFrameUrl(entry.controller);
         const fresh = this.createCachedPreview(active.link, url);
         fresh.url = entry.url;
+        fresh.requestUrl = entry.requestUrl;
         fresh.element.addClass('is-refreshing');
         // It is loading the same page behind the live one; two copies must not both be heard.
         this.setPreviewMuted(fresh, true);
@@ -2847,6 +2856,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.cleanupActivePreview();
             // Restore the geometry the preview had before it was docked, not the panel's.
             if (entry.floatingBounds) this.applyPreviewBounds(entry.element, entry.floatingBounds);
+            // The anchor is a note element; holding it would pin a detached Live Preview
+            // subtree for as long as the entry stays cached.
+            entry.floatingAnchor = undefined;
             this.activateCachedPreview(entry, anchor, anchor, undefined, entry.floatingBounds);
             return;
         }
