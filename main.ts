@@ -519,8 +519,7 @@ export default class LinkPreviewPlugin extends Plugin {
         doc: Document,
         link: HTMLElement,
         sourceKey?: string,
-        returnFocusTo?: HTMLElement,
-        focusedElement?: boolean
+        returnFocusTo?: HTMLElement
     };
     private lastMouseX = 0;
     private lastMouseY = 0;
@@ -2528,9 +2527,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         // where a stray Space flips a setting for every preview, and parking focus in the
         // address bar freezes it, swallows the first Escape, and makes the background
         // refresh cancel itself every time. Tab from here reaches the toolbar.
+        // The attribute stays on the element for its lifetime on purpose: docking reuses
+        // the same element as the side panel, which has to remain click-focusable for
+        // Escape to reach it.
         active.element.tabIndex = -1;
         active.element.focus({ preventScroll: true });
-        active.focusedElement = true;
     }
 
     private openPreviewForLink(linkInfo: LinkInfo) {
@@ -2738,9 +2739,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             if (returnFocusTo?.isConnected && previewEl.contains(doc.activeElement)) {
                 returnFocusTo.focus({ preventScroll: true });
             }
-            // The element is reused for the next preview of this page; leaving it focusable
-            // would make the popup click-focusable for the rest of its life.
-            if (this.activePreview?.focusedElement) previewEl.removeAttribute('tabindex');
             previewEl.addClass('is-cached');
             this.setPreviewMuted(entry, true);
             this.scheduleCacheExpiry(entry);
@@ -2987,7 +2985,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             entry.dock.close(false);
             this.cleanupActivePreview();
             // Restore the geometry the preview had before it was docked, not the panel's.
-            if (entry.floatingBounds) this.applyPreviewBounds(entry.element, entry.floatingBounds);
+            // Undocking after the window shrank would otherwise place the popup at its
+            // pre-dock coordinates, which can be entirely off screen.
+            if (entry.floatingBounds) {
+                this.applyPreviewBounds(entry.element, this.clampBoundsToWindow(entry.element, entry.floatingBounds));
+            }
             // The anchor is a note element; holding it would pin a detached Live Preview
             // subtree for as long as the entry stays cached.
             entry.floatingAnchor = undefined;
