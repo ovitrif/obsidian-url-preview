@@ -40,7 +40,8 @@ The main plugin class handles the lifecycle and core logic:
   - Waits for layout ready to call `registerGlobalHandler()`.
   - Registers the `editor-menu` and `url-menu` handlers, the CodeMirror badge extension, the `preview-link-at-cursor` command and the settings tab.
 - **`registerGlobalHandler()`**:
-  - Registers the per-document `mouseover`, `contextmenu`, `click`, `mousemove` and `keydown` handlers on a child `Component` per document, so a popout's handlers are released when its window closes.
+  - Registers the per-document `mouseover`, `contextmenu`, `click`, `mousemove`, `keydown` and `scroll` handlers, plus the window's `blur` and `resize`, on a child `Component` per document, so a popout's handlers are released when its window closes.
+  - `mouseover` and `mousemove` track the pointer in two separate pairs of fields. `lastMouseX/Y` answers "where is the pointer now" for the mouse-out grace period; `lastMoveX/Y` is the previous *mousemove* position. They have to stay separate: `mouseover` fires before the `mousemove` that caused it, with the same coordinates, so sharing one pair makes every move that crosses an element boundary read as no movement.
   - Handles modifier keys (CMD/CTRL) to toggle specific behaviors during editing.
 - **`handleLinkClick(event)`**:
   - Previews open on modifier+click, not on hover. Resolves the clicked element with `findLinkElement` and defers to Obsidian when it resolves nothing.
@@ -74,7 +75,8 @@ The plugin detects external links using the selector: `a.external-link, a[href^=
 
 Two rules keep it off Obsidian's own links and off documentation:
 - `extractUrlFromElement` runs an anchor's resolved `href` through `normalizeUrl`, which only accepts `http(s)`, so an internal link's `app://` URL resolves to nothing and the click falls through to Obsidian. `getEditorLinkInfo` additionally refuses to match an element carrying `data-href` or inside `.internal-link` by its display text.
-- `isRangeInsideCode` consults the editor's syntax tree, so a URL inside inline code or a fenced block gets neither a badge nor a preview.
+- `isRangeInsideCode` consults the editor's syntax tree, so a URL inside inline code, a fenced block, a comment or the frontmatter gets neither a badge nor a preview. All three write paths consult it — the command, the hover paths, and the editor context menu, which resolves links from raw text and would otherwise rewrite a URL inside a code sample.
+- `parseMarkdownLinks` bounds each half of a link: `findClosingBracket` and `findClosingParen` stop at the next blank line and at a length cap (1024 for the text, 16384 for the destination). Without the bound an unmatched `[` — LaTeX writes `\[`, and interval notation writes `$[0, 1)$` — scans to end of file, which is quadratic in the note's length and is paid on every keystroke.
 
 ### Preview Lifecycle
 
@@ -84,7 +86,7 @@ Two rules keep it off Obsidian's own links and off documentation:
 4. `cleanupActivePreview` - marks the entry `is-cached`, mutes it and arms a five-minute expiry; non-sticky previews close after a 300 ms grace period
 5. `disposeCachedPreview` - closes the dock, cancels a refresh, detaches the guest keyboard listener and removes the element
 
-The cache holds at most five entries (`PREVIEW_CACHE_LIMIT`), evicts least-recently-activated first, and never evicts the active or docked entry. Each cached entry is a live renderer process: on the live vault four cached pages measured ~830 MB, which is why they are muted while hidden and dropped after `PREVIEW_CACHE_TTL_MS`.
+The cache holds at most five entries (`PREVIEW_CACHE_LIMIT`), evicts least-recently-activated first, and never evicts the active or docked entry. An entry is found by the URL its link asked for as well as by the page it is currently showing, but the first of those only counts while the page is still the one its load settled on — otherwise browsing inside a preview makes that page answer for the link. Each cached entry is a live renderer process: on the live vault four cached pages added 865 MB and four processes, which is why they are muted while hidden and dropped after `PREVIEW_CACHE_TTL_MS`.
 
 ### Platform Handling
 
