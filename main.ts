@@ -782,20 +782,21 @@ export default class LinkPreviewPlugin extends Plugin {
                     const win = doc.defaultView ?? window;
                     win.setTimeout(() => this.hideEditorHoverUi(doc), 0);
                 }
-                if (e.key === 'Escape' && this.activePreview?.doc === doc) {
-                    this.cleanupActivePreview();
-                }
                 if (e.key === 'Escape') {
                     this.hideGitHubHoverCard(doc);
                     return;
                 }
             });
-            // A docked panel is not the active preview, so Escape needs a separate exit — in the
-            // capture phase, because Obsidian's keymap marks every Escape handled by the time a
-            // bubble listener sees it. At capture, `defaultPrevented` still distinguishes an
-            // Escape a modal, suggester or palette has claimed from one nothing wants.
+            // Escape closes a preview or a docked panel — in the capture phase, because
+            // Obsidian's keymap marks every Escape handled by the time a bubble listener sees
+            // it. Measured on 1.13.7: with nothing else open, `defaultPrevented` is false at
+            // capture and true by bubble; with the command palette open it is true at both.
+            // So capture is the only place that can tell an Escape a modal, suggester or
+            // palette has claimed from one nothing wants. The floating preview used to close
+            // from a bubble listener with no such check, so dismissing the palette — or, in
+            // Vim mode, every exit from insert mode — closed it too.
             scope.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
-                if (e.key !== 'Escape' || e.defaultPrevented || this.activePreview?.doc === doc) return;
+                if (e.key !== 'Escape' || e.defaultPrevented) return;
                 const focused = doc.activeElement;
                 // The toolbar's address, size and zoom fields implement Escape themselves
                 // (revert and blur). Capture phase runs before their own listeners and is
@@ -803,6 +804,12 @@ export default class LinkPreviewPlugin extends Plugin {
                 // fields: docking with the mouse leaves focus on the toolbar's dock button,
                 // and excluding the whole toolbar left that panel with no Escape at all.
                 if (focused instanceof HTMLInputElement && focused.closest('.preview-buttons')) return;
+                // A floating preview closes wherever focus is: unlike the panel, Escape is
+                // how you dismiss it, and focus usually never left the note.
+                if (this.activePreview?.doc === doc) {
+                    this.cleanupActivePreview();
+                    return;
+                }
                 // Focus in the note is not a request to close the panel — Escape is an
                 // ordinary editing key there, and a per-keystroke idiom in Vim mode.
                 const unfocused = !focused || focused === doc.body;
