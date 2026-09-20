@@ -1614,6 +1614,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             top: `${iconPosition.top}px`,
         });
         state.container.addClass('is-visible');
+        state.container.toggleAttribute('inert', false);
         state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
         state.target = linkInfo;
 
@@ -1944,6 +1945,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (!state) return;
 
         state.container.removeClass('is-visible');
+        state.container.toggleAttribute('inert', true);
         state.hoverZone = undefined;
         state.target = undefined;
     }
@@ -2982,6 +2984,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private isMouseOverPreviewOrLink(): boolean {
         if (!this.activePreview) return false;
+
+        // Keyboard focus counts as being in the preview; the pointer is not the only way in.
+        const active = this.activePreview.doc.activeElement;
+        if (active && this.activePreview.element.contains(active)) return true;
 
         // Check preview bounds
         const previewRect = this.activePreview.element.getBoundingClientRect();
