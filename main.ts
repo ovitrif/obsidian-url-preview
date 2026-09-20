@@ -564,11 +564,17 @@ export default class LinkPreviewPlugin extends Plugin {
                 if (view && this.isRangeInsideCode(view, link.start, link.end)) return false;
                 if (checking) return true;
 
-                const anchor = ctx instanceof MarkdownView ? ctx.contentEl : undefined;
-                if (!anchor) return false;
+                if (!view) return false;
+                // Anchor on the link itself: the whole note as hover element would position the
+                // popup in the corner and make every click in the note count as a click inside it.
+                const at = view.domAtPos(link.start);
+                const node = at.node.nodeType === Node.ELEMENT_NODE ? at.node : at.node.parentElement;
+                const anchor = node instanceof HTMLElement ? node : view.contentDOM;
                 this.openPreviewForLink({
+                    editorView: view,
                     element: anchor,
                     hoverElement: anchor,
+                    markdownLink: link,
                     sourceKey: this.getMarkdownLinkSourceKey(link),
                     url: link.url,
                 });
@@ -722,6 +728,11 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 if (e.key === 'Escape' && this.activePreview) {
                     this.cleanupActivePreview();
+                } else if (e.key === 'Escape') {
+                    // A docked panel is not the active preview, so it needs its own exit.
+                    for (const entry of [...this.previewCache.values()]) {
+                        if (entry.doc === doc && entry.dock) entry.dock.close();
+                    }
                 }
                 if (e.key === 'Escape') {
                     this.hideGitHubHoverCard(doc);
@@ -861,7 +872,11 @@ export default class LinkPreviewPlugin extends Plugin {
         const nextElement = link.nextElementSibling;
         const existingBadge = nextElement?.classList.contains('url-preview-github-pr-badge') ? nextElement : null;
         if (existingBadge instanceof HTMLElement) {
-            this.configureGitHubPullRequestBadge(existingBadge, githubReference);
+            // Rewriting an unchanged badge still counts as a childList mutation, which wakes the
+            // observer that scheduled this pass and spins the updater at frame rate forever.
+            if (existingBadge.getAttribute('data-github-reference') !== githubReference.shortReference) {
+                this.configureGitHubPullRequestBadge(existingBadge, githubReference);
+            }
             return;
         }
 
@@ -872,7 +887,8 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private configureGitHubPullRequestBadge(badge: HTMLElement, githubReference: GitHubIssueReference) {
-        badge.textContent = `#${githubReference.id}`;
+        const text = `#${githubReference.id}`;
+        if (badge.textContent !== text) badge.textContent = text;
         badge.removeAttribute('aria-label');
         badge.setAttr('aria-description', getGitHubReferenceCopyDescription());
         badge.setAttr('data-github-id', githubReference.id);
@@ -2292,9 +2308,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const linkInfo = this.findLinkElement(target, null, { x: event.clientX, y: event.clientY });
         if (!linkInfo) return;
 
+        // Other plugins listen on this document too; only this link's default is ours to cancel.
         event.preventDefault();
         event.stopPropagation();
-        event.stopImmediatePropagation();
         this.openPreviewForLink(linkInfo);
     }
 
