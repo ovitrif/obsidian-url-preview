@@ -44,6 +44,6 @@ export default defineConfig([
 		},
 	},
 	{
-		ignores: ["node_modules/", "main.js", "dist/"],
+		ignores: ["node_modules/", "main.js", "dist/", ".ai/"],
 	},
 ]);
