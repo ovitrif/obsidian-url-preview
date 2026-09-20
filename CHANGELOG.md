@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Command **Preview link at cursor**, so a preview can be opened from the keyboard or on a touch device.
+
+### Changed
+
+- Cached previews are silenced while they are out of sight and released five minutes after they are closed.
+- Preview, divider, hover card and toolbar tooltip now sit on Obsidian's own layers rather than fixed numbers, so Obsidian's popovers no longer cover a preview.
+- Badge decorations are built from a cached parse and only for the visible part of the note.
+
+### Fixed
+
+- Modifier-clicking an internal `[[wikilink]]` opened a blank preview instead of the note.
+- URLs written inside inline code or a fenced code block were given previews and GitHub badges.
+- A closed preview of a page playing audio kept playing it from an invisible element.
+- A bare URL ending in a parenthesis, such as a Wikipedia disambiguation link, was truncated, including when converting it to a Markdown link.
+- Converting a link whose page returned an HTTP error wrote the error page's title into the note.
+- The side panel swallowed every preview in its window while it was hidden in a background tab, and lost unsaved input when it was retargeted.
+- Returning to a floating preview restored the side panel's geometry instead of the preview's own.
+- A half-typed value in Maximum height or Maximum width was written to disk and could leave previews unopenable.
+- Holding an arrow key on the side-panel divider wrote settings on every repeat.
+- A popout window's handlers were never released when it closed.
+- The preview toolbar and inline buttons had no visible keyboard focus ring, and the spinners ignored the reduced-motion setting.
+
 ## [0.8.0] - 2026-09-08
 
 ### Added

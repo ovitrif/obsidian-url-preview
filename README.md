@@ -36,21 +36,26 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 ## Settings
 
-- **Preview Click Modifiers**: Choose which keys to hold while clicking a link (Command, Control, Alt, Shift — can combine multiple)
-- **Sticky Popup**: Keep preview open until ESC or click outside
-- **Show Preview Button on Link Hover**: Show the eye button beside hovered links (off on new installs)
-- **Show Open in Browser Button**: Show a button to open the URL in the default browser
-- **Show Close Button**: Show a button to close the preview popup
-- **Show Loading Indicators**: Show the initial loading overlay and spinners (off by default); disabling it also removes the content-area background override
-- **Maximum Height / Width**: Maximum dimensions of the preview window (in pixels)
-- **Allow Resize**: Enable drag-to-resize on preview edges and corners
-- **Persist Resize**: Remember resized dimensions for future previews (with reset button)
+- **Preview click modifiers**: which keys to hold while clicking a link (Command, Control, Option, Shift — combine as many as you like)
+- **Sticky popup**: keep the preview open until Escape or a click outside
+- **Show open in browser button**: show a button that opens the URL in your default browser
+- **Show close button**: show a button that closes the preview
+- **Show loading indicators**: show the initial loading overlay and the spinners (off by default); turning it off also drops the content-area background override
+- **Show preview button on link hover**: show the eye button beside hovered links (off on new installs)
+- **Show external-link icon**: keep Obsidian's external-link glyph beside links
+- **Show GitHub hover cards**: show a card with the title and state when hovering a GitHub issue or pull request
+- **Show GitHub pull request numbers**: show `#123` beside GitHub pull request links
+- **Maximum height / width**: maximum size of the preview window, in pixels
+- **Allow resize**: drag the preview's edges and corners to resize it
+- **Persist resize**: reuse the resized dimensions for later previews, with a reset button
 
 ## Usage
 
-Hold your configured modifier keys (⌘ on Mac, Ctrl on Windows/Linux by default) and click any external link to see a preview.
+Hold your configured modifier keys (⌘ on Mac, Ctrl on Windows/Linux by default) and click any external link to see a preview. Without a mouse, put the cursor on a link and run **URL Preview: Preview link at cursor** from the command palette.
 
-Use **Open in right-side panel** in the toolbar to place the preview beside your note without creating a workspace split or tab. Further preview links reuse that panel; Back and Forward follow both links opened from notes and navigation within the website. Closing the panel restores the note's full width. Closing a preview keeps its loaded page in memory. On reopening, the cached page appears immediately while a fresh copy loads behind it. The replacement preserves page scrolling; failed refreshes and active edits keep the existing page. Refreshes are triggered only by reopening a closed preview. The five-page cache is cleared when the plugin unloads or Obsidian closes.
+URLs written inside inline code or a fenced code block are left alone: they get no preview and no GitHub badge.
+
+Use **Open in right-side panel** in the toolbar to place the preview beside your note without creating a workspace split or tab. Further preview links reuse that panel; Back and Forward follow both links opened from notes and navigation within the website. Closing the panel restores the note's full width. Closing a preview keeps its loaded page in memory. On reopening, the cached page appears immediately while a fresh copy loads behind it. The replacement preserves page scrolling; failed refreshes and active edits keep the existing page. Refreshes are triggered only by reopening a closed preview. A cached page is silenced while it is out of sight, and is dropped five minutes after you close it, when a sixth page pushes it out, or when the plugin unloads.
 
 In Live Preview or source mode, right-click an external URL, a scheme-less `github.com/...` URL, or a short GitHub reference such as `owner/repo#123`, then choose **Convert URL to Markdown link** to replace it with `[page title](url)`. For GitHub pull request and issue links, the menu also includes **Add repo name prefix**, **Copy PR ID**, and **Copy agent session title**.
 

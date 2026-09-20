@@ -38,27 +38,29 @@ The main plugin class handles the lifecycle and core logic:
 - **`onload()`**:
   - Loads settings.
   - Waits for layout ready to call `registerGlobalHandler()`.
-  - Adds the settings tab.
+  - Registers the `editor-menu` and `url-menu` handlers, the CodeMirror badge extension, the `preview-link-at-cursor` command and the settings tab.
 - **`registerGlobalHandler()`**:
-  - Attaches `mouseover` event listeners to the document to detect link hovers (`handleLinkHover`).
+  - Registers the per-document `mouseover`, `contextmenu`, `click`, `mousemove` and `keydown` handlers on a child `Component` per document, so a popout's handlers are released when its window closes.
   - Handles modifier keys (CMD/CTRL) to toggle specific behaviors during editing.
-- **`handleLinkHover(event)`**:
-  - Identifies if the hovered element is a valid external link using `findLinkElement`.
-  - Manages debounce logic (`hoverTimeout`) before showing the preview.
-  - Sets up `mouseleave` listeners to cleanup the preview.
-- **`showPreview(link, url)`**:
-  - Creates the preview container (`createPreviewElement`).
-  - Calculates positioning (`calculatePreviewBounds`) to ensure the preview fits within the window.
-  - Injects an `iframe` to load the external URL.
+- **`handleLinkClick(event)`**:
+  - Previews open on modifier+click, not on hover. Resolves the clicked element with `findLinkElement` and defers to Obsidian when it resolves nothing.
+- **`showPreview(link, url, hoverElement, sourceKey?)`**:
+  - Reuses a visible side panel that owns the link, otherwise opens a floating preview.
+  - Each call takes a request token; anything that resumes after an `await` drops out when a newer click has started.
+- **`showFloatingPreview`**:
+  - Reuses a cached entry for the same document and URL, or builds one with `createCachedPreview`.
+  - Positions it with `calculatePreviewBounds` and loads the URL in a `webview` (an `iframe` where `webview` is unavailable).
 
 #### LinkPreviewSettingTab
 
 Settings UI for configuring plugin behavior:
-- `requireModifierKey`: Toggle to require holding a modifier key for previews (default: true).
-- `modifierKey`: Which modifier key to use (meta/ctrl/alt/shift, platform-aware default).
-- `closeOnModifierRelease`: Whether to close preview when modifier key is released (default: true).
-- `hoverDelay`: Time in ms before preview appears.
-- `maxPreviewHeight` / `maxPreviewWidth`: Dimensions of the preview window.
+- `modifierKeys`: which of meta/ctrl/alt/shift must be held, with a platform-aware default; at least one is always selected.
+- `stickyPopup`: keep the preview open until Escape or a click outside.
+- `showOpenInBrowser`, `showCloseButton`, `showLoadingIndicators`: preview chrome.
+- `showInlinePreviewButton`, `showInlineExternalLinkIcon`, `showGitHubHoverCard`, `showGitHubPullRequestIds`: inline link affordances.
+- `maxPreviewHeight` / `maxPreviewWidth`: dimensions of the preview window, clamped by `sanitizePreviewSize`.
+- `allowResize`, `persistResize`, `persistedWidth` / `persistedHeight`: drag-to-resize and whether the size is reused.
+- `domainZoomLevels`, `sidePanelRatio`: per-domain zoom and the side-panel divider position.
 
 #### Utilities
 
@@ -68,13 +70,21 @@ Settings UI for configuring plugin behavior:
 
 ### Link Detection
 
-The plugin detects external links using the selector: `a.external-link, a[href^="http"], span.external-link, .cm-url, .cm-link, .cm-underline, [data-href], [data-url]`. This covers both reading mode and editor mode (CodeMirror classes like `.cm-url`).
+The plugin detects external links using the selector: `a.external-link, a[href^="http"], span.external-link, .cm-hmd-external-link, .cm-link .cm-underline, .cm-url, [data-href], [data-url]`. This covers both reading mode and editor mode (CodeMirror classes like `.cm-url`).
+
+Two rules keep it off Obsidian's own links and off documentation:
+- `extractUrlFromElement` runs an anchor's resolved `href` through `normalizeUrl`, which only accepts `http(s)`, so an internal link's `app://` URL resolves to nothing and the click falls through to Obsidian. `getEditorLinkInfo` additionally refuses to match an element carrying `data-href` or inside `.internal-link` by its display text.
+- `isRangeInsideCode` consults the editor's syntax tree, so a URL inside inline code or a fenced block gets neither a badge nor a preview.
 
 ### Preview Lifecycle
 
-1. `handleLinkHover` - Triggered on mouseover, starts hover delay timer
-2. `showPreview` - Creates preview popup with iframe after delay
-3. `cleanupActivePreview` - Removes preview on mouse leave with 300ms grace period
+1. `handleLinkClick` - modifier+click resolves the link and calls `openPreviewForLink`
+2. `showPreview` - reuses the side panel when it owns the link, otherwise `showFloatingPreview`
+3. `createCachedPreview` / `activateCachedPreview` - builds or reactivates the entry, unmutes it and clears its expiry
+4. `cleanupActivePreview` - marks the entry `is-cached`, mutes it and arms a five-minute expiry; non-sticky previews close after a 300 ms grace period
+5. `disposeCachedPreview` - closes the dock, cancels a refresh, detaches the guest keyboard listener and removes the element
+
+The cache holds at most five entries (`PREVIEW_CACHE_LIMIT`), evicts least-recently-activated first, and never evicts the active or docked entry. Each cached entry is a live renderer process: on the live vault four cached pages measured ~830 MB, which is why they are muted while hidden and dropped after `PREVIEW_CACHE_TTL_MS`.
 
 ### Platform Handling
 
