@@ -19,6 +19,8 @@ const copyPlugin = {
 		build.onEnd(() => {
 			copyFileSync("manifest.json", "dist/manifest.json");
 			copyFileSync("styles.css", "dist/styles.css");
+			// styles.css embeds a subset of Flow Circular; the OFL notice travels with it.
+			copyFileSync("assets/fonts/FlowCircular-OFL.txt", "dist/FlowCircular-OFL.txt");
 		});
 	},
 };

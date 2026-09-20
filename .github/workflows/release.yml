@@ -16,17 +16,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Check the tag matches the manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # shellcheck disable=SC2016  # the ${} below are JS template literals, not shell
+          node -e '
+            const tag = process.env.TAG;
+            const manifest = require("./manifest.json").version;
+            if (manifest !== tag) {
+              console.error(`manifest.json is ${manifest} but the tag is ${tag}`);
+              process.exit(1);
+            }
+            if (!require("./versions.json")[tag]) {
+              console.error(`versions.json has no entry for ${tag}`);
+              process.exit(1);
+            }
+          '
       - run: npm ci
       - run: npm run build
-      - name: Check the tag matches the manifest
-        run: |
-          manifest="$(node -p "require('./manifest.json').version")"
-          test "$manifest" = "$GITHUB_REF_NAME" \
-            || { echo "manifest.json is $manifest but the tag is $GITHUB_REF_NAME"; exit 1; }
-          node -e "
-            const v = require('./versions.json');
-            if (!v['$GITHUB_REF_NAME']) { console.error('versions.json has no entry for $GITHUB_REF_NAME'); process.exit(1); }
-          "
       - name: Extract release notes
         run: |
           awk -v version="$GITHUB_REF_NAME" '
