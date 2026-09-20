@@ -775,8 +775,10 @@ export default class LinkPreviewPlugin extends Plugin {
                 const focused = doc.activeElement;
                 // The toolbar's address, size and zoom fields implement Escape themselves
                 // (revert and blur). Capture phase runs before their own listeners and is
-                // immune to their stopPropagation, so they have to be excluded here.
-                if (focused?.closest('.preview-buttons')) return;
+                // immune to their stopPropagation, so they have to be excluded here. Only the
+                // fields: docking with the mouse leaves focus on the toolbar's dock button,
+                // and excluding the whole toolbar left that panel with no Escape at all.
+                if (focused instanceof HTMLInputElement && focused.closest('.preview-buttons')) return;
                 // Focus in the note is not a request to close the panel — Escape is an
                 // ordinary editing key there, and a per-keystroke idiom in Vim mode.
                 const unfocused = !focused || focused === doc.body;
