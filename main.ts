@@ -503,7 +503,8 @@ export default class LinkPreviewPlugin extends Plugin {
         cleanup: () => void,
         doc: Document,
         link: HTMLElement,
-        sourceKey?: string
+        sourceKey?: string,
+        returnFocusTo?: HTMLElement
     };
     private lastMouseX = 0;
     private lastMouseY = 0;
@@ -581,6 +582,9 @@ export default class LinkPreviewPlugin extends Plugin {
                     sourceKey: this.getMarkdownLinkSourceKey(link),
                     url: link.url,
                 });
+                // Opened from the keyboard, so put focus in the preview: the editor binds Tab
+                // to indentation, and without this the preview cannot even be scrolled.
+                this.focusActivePreview();
                 return true;
             },
         });
@@ -2296,10 +2300,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const title = await this.fetchPageTitleForNotice(link.url, notice);
         if (!title) return;
 
-        // A closed leaf resolves to no file, and CodeMirror swallows a dispatch on a destroyed
-        // view without throwing, so this is also what stops a success notice for a write that
-        // never happened.
-        if (!file || this.fileForEditorTarget(editorView) !== file) {
+        // Compare before and after only. A canvas card or an embedded editor resolves to no
+        // file at all, and refusing those would break a button that works there. CodeMirror
+        // swallows a dispatch on a destroyed view, so the connection check is what stops a
+        // success notice for a write that never happened.
+        if (!editorView.dom.isConnected || this.fileForEditorTarget(editorView) !== file) {
             notice.hide();
             new Notice('The note changed before the link could be converted.');
             return;
@@ -2405,6 +2410,20 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         event.preventDefault();
         event.stopPropagation();
         this.openPreviewForLink(linkInfo);
+    }
+
+    // Focus the preview itself so the keyboard can reach its toolbar and its page, and
+    // remember where focus came from so closing it can put the user back.
+    private focusActivePreview() {
+        const active = this.activePreview;
+        if (!active) return;
+        const doc = active.doc;
+        const previous = doc.activeElement;
+        if (previous instanceof HTMLElement) active.returnFocusTo = previous;
+        active.element.tabIndex = -1;
+        active.element.focus({ preventScroll: true });
+        const firstControl = active.element.querySelector<HTMLElement>('.preview-buttons button:not(:disabled)');
+        firstControl?.focus({ preventScroll: true });
     }
 
     private openPreviewForLink(linkInfo: LinkInfo) {
@@ -2551,6 +2570,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (this.settings.stickyPopup) {
             clickOutsideHandler = (e: MouseEvent) => {
                 const target = e.target;
+                // Measured on Obsidian 1.13.7: a popout's elements satisfy the main realm's
+                // `Element` (and not the popout window's), so this narrowing holds there.
                 if (!(target instanceof Element)) return;
                 if (!previewEl.contains(target) && !hoverElement.contains(target)) {
                     this.cleanupActivePreview();
@@ -2571,6 +2592,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             }
             entry.cancelRefresh?.();
             entry.url = this.getPreviewFrameUrl(entry.controller);
+            // Give focus back to wherever it was when the preview took it.
+            const returnFocusTo = this.activePreview?.returnFocusTo;
+            if (returnFocusTo?.isConnected && previewEl.contains(doc.activeElement)) {
+                returnFocusTo.focus({ preventScroll: true });
+            }
             previewEl.addClass('is-cached');
             this.setPreviewMuted(entry, true);
             this.scheduleCacheExpiry(entry);
@@ -2784,7 +2810,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private dockPreview(container: HTMLElement) {
         const entry = this.previewCache.get(container);
         if (entry?.dock) {
-            const anchor = entry.floatingAnchor?.isConnected ? entry.floatingAnchor : entry.dock.host;
+            // Falling back to the host would make the whole note count as "inside" the
+            // preview, so a click anywhere in it would stop dismissing a sticky popup.
+            const anchor = entry.floatingAnchor?.isConnected ? entry.floatingAnchor : entry.element;
             entry.dock.close(false);
             this.cleanupActivePreview();
             // Restore the geometry the preview had before it was docked, not the panel's.
@@ -2796,7 +2824,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         // The most recent leaf may live in another window; the panel has to dock in the one
         // the preview is in, so prefer a leaf from that document before falling back.
         let note = this.app.workspace.getMostRecentLeaf();
-        if (!note || note.view.containerEl.ownerDocument !== entry.doc) {
+        // The most recent leaf can be a canvas, a PDF or a board; only a note can give up
+        // half its width to the panel.
+        if (!note || !(note.view instanceof MarkdownView) || note.view.containerEl.ownerDocument !== entry.doc) {
             note = null;
             this.app.workspace.iterateAllLeaves((candidate) => {
                 if (note || candidate.view.containerEl.ownerDocument !== entry.doc) return;
@@ -2913,10 +2943,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             if ('isMainFrame' in event && event.isMainFrame === false) return;
             const errorCode = 'errorCode' in event && typeof event.errorCode === 'number' ? event.errorCode : 0;
             if (errorCode === -3) return;
-            // -300..-302 are unknown or disallowed schemes, which a page triggers on its own
-            // when it links to a mail client or an app — but only ignorable once something
-            // is on screen to fall back to.
-            if (hasRevealedInitialPage && [-300, -301, -302].includes(errorCode)) return;
+            // -300..-302 are unknown or disallowed schemes. A page that hands off to a mail
+            // client or an app fails a different URL than the one being previewed, so that is
+            // never worth reporting; a scheme failure of the navigation itself still is.
+            if ([-300, -301, -302].includes(errorCode)) {
+                const failedUrl = this.getPreviewNavigationEventUrl(event);
+                if (hasRevealedInitialPage || (failedUrl && failedUrl !== controller.currentUrl)) return;
+            }
             previewEl.removeClass('is-page-loading');
             if (hasRevealedInitialPage) {
                 // The previous page is still on screen, so an overlay would hide readable
@@ -4912,7 +4945,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     .setName('Maximum height')
                     .setDesc('Maximum height of preview window (in px)')
                     .addText(text => text
-                        .setPlaceholder('300')
+                        .setPlaceholder(String(DEFAULT_SETTINGS.maxPreviewHeight))
                         .setValue(String(this.plugin.settings.maxPreviewHeight))
                         .onChange(async (value) => {
                             // Only a value that already makes sense is stored. Rewriting the field
@@ -4947,7 +4980,7 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     .setName('Maximum width')
                     .setDesc('Maximum width of preview window (in px)')
                     .addText(text => text
-                        .setPlaceholder('400')
+                        .setPlaceholder(String(DEFAULT_SETTINGS.maxPreviewWidth))
                         .setValue(String(this.plugin.settings.maxPreviewWidth))
                         .onChange(async (value) => {
                             // Only a value that already makes sense is stored. Rewriting the field

@@ -266,7 +266,9 @@ body.url-preview-hide-external-link-icon .external-link {
 }
 
 /* Rendered GitHub pull request number shown beside GitHub PR links */
+/* The badge is not part of the note's text: selecting a paragraph must not copy it. */
 .url-preview-github-pr-badge {
+    user-select: none;
     display: inline-block;
     margin-left: 0.25em;
     margin-right: 0.2em;
