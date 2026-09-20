@@ -4098,7 +4098,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
 
         // Matching by display text would let [[Design]] resolve to a same-titled external link.
-        if (linkTarget.hasAttribute('data-href') || linkTarget.closest('.internal-link')) return null;
+        // Live Preview wraps a wikilink's text in .cm-underline inside .cm-hmd-internal-link,
+        // which carries neither data-href nor .internal-link, so both shapes are checked.
+        if (linkTarget.hasAttribute('data-href') ||
+            linkTarget.closest('.internal-link, .cm-hmd-internal-link, .cm-hmd-barelink, .cm-link-alias')) return null;
 
         const textLink = this.getMarkdownLinkByDisplayText(content, linkTarget);
         if (textLink && !this.isRangeInsideCode(editorView, textLink.start, textLink.end)) {
