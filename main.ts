@@ -3280,10 +3280,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         // Several controls save on every keystroke, drag end or click. Without a queue the
         // adapter writes overlap and whichever snapshot lands last wins, silently reverting
         // whatever was changed after it was serialized.
-        this.settingsWrite = this.settingsWrite
+        const write = this.settingsWrite
             .catch(() => undefined)
             .then(() => this.saveData(this.settings));
-        await this.settingsWrite;
+        // The shared link never rejects, so one failed write cannot reject every later caller.
+        this.settingsWrite = write.catch(() => undefined);
+        await write;
         if (this.unloaded) return;
         // Toolbar buttons and resize handles are built once per preview, so a cached page
         // would keep the old chrome until it aged out. Drop the idle ones instead.
