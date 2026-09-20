@@ -4797,10 +4797,15 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return trimmed;
     }
 
+    // A link's text cannot contain a blank line, so the scan stops at the paragraph the
+    // bracket opened in. Running to end of file made every unmatched '[' — LaTeX's `\\[ … \\]`,
+    // an interval like `$[0, 1)$` — scan the rest of the note, which is quadratic in its
+    // length: on a maths-heavy note that reached 40 ms per keystroke at 56 KB.
     private findClosingBracket(content: string, start: number): number {
         let depth = 0;
+        const limit = this.linkScanLimit(content, start, LinkPreviewPlugin.MAX_LINK_TEXT);
 
-        for (let index = start; index < content.length; index++) {
+        for (let index = start; index < limit; index++) {
             const char = content[index];
 
             if (char === '\\') {
@@ -4821,10 +4826,24 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return -1;
     }
 
+    // Neither half of a link can contain a blank line, and both bounds matter: a note
+    // written with single newlines has no paragraph break to stop at. The two halves get
+    // very different caps — link text is never long, but a share URL can carry thousands
+    // of characters of payload in its fragment, and this vault has two of them.
+    private static readonly MAX_LINK_TEXT = 1024;
+    private static readonly MAX_LINK_DESTINATION = 16384;
+
+    private linkScanLimit(content: string, start: number, span: number): number {
+        const blankLine = content.indexOf('\n\n', start);
+        const paragraphEnd = blankLine === -1 ? content.length : blankLine;
+        return Math.min(paragraphEnd, start + span);
+    }
+
     private findClosingParen(content: string, start: number): number {
         let depth = 0;
+        const limit = this.linkScanLimit(content, start, LinkPreviewPlugin.MAX_LINK_DESTINATION);
 
-        for (let index = start; index < content.length; index++) {
+        for (let index = start; index < limit; index++) {
             const char = content[index];
 
             if (char === '\\') {
