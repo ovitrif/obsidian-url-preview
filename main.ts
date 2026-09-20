@@ -519,10 +519,13 @@ export default class LinkPreviewPlugin extends Plugin {
         doc: Document,
         link: HTMLElement,
         sourceKey?: string,
-        returnFocusTo?: HTMLElement
+        returnFocusTo?: HTMLElement,
+        focusedElement?: boolean
     };
     private lastMouseX = 0;
     private lastMouseY = 0;
+    private lastMoveX = 0;
+    private lastMoveY = 0;
     private activeResizeCleanup?: () => void;
     private handledDocuments = new Set<Document>();
     private convertLinkMenus = new WeakSet<Menu>();
@@ -757,11 +760,18 @@ export default class LinkPreviewPlugin extends Plugin {
                 this.handleLinkClick(e);
             }, { capture: true });
             scope.registerDomEvent(doc, 'mousemove', (e: MouseEvent) => {
-                const dx = Math.abs(e.clientX - this.lastMouseX);
-                const dy = Math.abs(e.clientY - this.lastMouseY);
+                // This delta needs its own pair. `mouseover` also stamps lastMouseX/Y — the
+                // cleanup grace period reads those — and it fires *before* the mousemove that
+                // caused it, with the same coordinates. Sharing the fields made every move
+                // that crossed an element boundary look like no movement at all, which is
+                // exactly when the inline control has to move or go away.
+                const dx = Math.abs(e.clientX - this.lastMoveX);
+                const dy = Math.abs(e.clientY - this.lastMoveY);
                 const didMouseMove = dx > 0 || dy > 0;
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
+                this.lastMoveX = e.clientX;
+                this.lastMoveY = e.clientY;
                 if (didMouseMove) {
                     this.updateInlinePreviewButton(e);
                     this.updateGitHubHoverCardFromEvent(e);
@@ -805,16 +815,21 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
             }, { capture: true });
 
-            // The card is anchored to a viewport point, so scrolling leaves it pinned over
-            // whatever moved under it, and its hover zone goes stale with it.
+            // Both are anchored to viewport points, so scrolling leaves them pinned over
+            // whatever moved under them, and their hover zones go stale with them.
             scope.registerDomEvent(doc, 'scroll', () => {
-                this.hideGitHubHoverCard(doc);
+                this.hideEditorHoverUi(doc);
             }, { capture: true, passive: true });
 
             const win = doc.defaultView;
             if (win) {
                 scope.registerDomEvent(win, 'blur', () => {
-                    this.hideGitHubHoverCard(doc);
+                    this.hideEditorHoverUi(doc);
+                });
+                // Same reason as the scroll listener: both are placed in viewport
+                // coordinates that a resize invalidates.
+                scope.registerDomEvent(win, 'resize', () => {
+                    this.hideEditorHoverUi(doc);
                 });
             }
             this.registerGitHubPullRequestBadges(doc);
@@ -942,7 +957,8 @@ export default class LinkPreviewPlugin extends Plugin {
             // Editor badges are CodeMirror widgets owned by the editor extension, never orphans.
             if (badge.closest('.cm-editor')) return;
             const previous = badge.previousElementSibling;
-            if (!(previous instanceof HTMLAnchorElement) || !this.getGitHubIssueReference(previous.href)) {
+            if (!(previous instanceof HTMLAnchorElement) ||
+                !this.getGitHubIssueReference(this.normalizeUrl(previous.href) ?? previous.href)) {
                 badge.remove();
             }
         });
@@ -1154,7 +1170,13 @@ export default class LinkPreviewPlugin extends Plugin {
         const state = this.inlinePreviewControls.get(doc);
         const point = { x: event.clientX, y: event.clientY };
         if (state?.container.contains(target) || (state && this.isPointInInlineControlsHoverZone(state, point))) {
-            return;
+            // The zone spans the whole line so the controls survive the pointer leaving the
+            // link, but it also covers every other link on that line. A different one under
+            // the pointer has to win, or the button stays on — and previews — the first.
+            const over = !state.container.contains(target)
+                ? this.findLinkElement(target, null, point)
+                : null;
+            if (!over || over.element === state.target?.element) return;
         }
 
         if (this.isSourceModeMarkdownTarget(target)) {
@@ -1723,6 +1745,15 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private showInlinePreviewControls(doc: Document, linkInfo: LinkInfo, point: ScreenPoint) {
+        const canConvertGitHubUrl = this.canInlineConvertGitHubUrl(linkInfo);
+        // Deciding this last meant positioning the controls — thirty `elementsFromPoint`
+        // hit-tests, each forcing layout — on every mouse move over a link, only to hide
+        // them again. With the default settings that was the only path taken.
+        if (!canConvertGitHubUrl && !this.settings.showInlinePreviewButton) {
+            this.hideInlinePreviewControls(doc);
+            return;
+        }
+
         const state = this.getInlinePreviewControls(doc);
         const iconPosition = this.getInlinePreviewControlsPosition(linkInfo, point, state.container);
         if (!iconPosition) {
@@ -1739,7 +1770,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         state.hoverZone = this.getInlinePreviewLineHoverRect(linkInfo) ?? undefined;
         state.target = linkInfo;
 
-        const canConvertGitHubUrl = this.canInlineConvertGitHubUrl(linkInfo);
         if (canConvertGitHubUrl) {
             state.githubConvertButton.removeClass('is-hidden');
         } else {
@@ -1749,9 +1779,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             state.previewButton.removeClass('is-hidden');
         } else {
             state.previewButton.addClass('is-hidden');
-        }
-        if (!canConvertGitHubUrl && !this.settings.showInlinePreviewButton) {
-            this.hideInlinePreviewControls(doc);
         }
     }
 
@@ -2503,6 +2530,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         // refresh cancel itself every time. Tab from here reaches the toolbar.
         active.element.tabIndex = -1;
         active.element.focus({ preventScroll: true });
+        active.focusedElement = true;
     }
 
     private openPreviewForLink(linkInfo: LinkInfo) {
@@ -2566,7 +2594,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             panel.requestUrl = url;
             // `bindPreviewFrame` only stamps this on a first reveal, so the frame has to be
             // told that this navigation is one; otherwise it keeps the very first page's URL.
-            panel.controller.resolvedUrl = undefined;
+            // Provisional, so a page that never loads does not leave the frame without one;
+            // the reveal overwrites it with the URL the load actually settled on.
+            panel.controller.resolvedUrl = url;
             panel.controller.resetResolved?.();
         }
         panel.dock?.updateBounds();
@@ -2708,6 +2738,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             if (returnFocusTo?.isConnected && previewEl.contains(doc.activeElement)) {
                 returnFocusTo.focus({ preventScroll: true });
             }
+            // The element is reused for the next preview of this page; leaving it focusable
+            // would make the popup click-focusable for the rest of its life.
+            if (this.activePreview?.focusedElement) previewEl.removeAttribute('tabindex');
             previewEl.addClass('is-cached');
             this.setPreviewMuted(entry, true);
             this.scheduleCacheExpiry(entry);
@@ -2894,6 +2927,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 const live = entry.element.getBoundingClientRect();
                 const restoreBounds = entry.restoreBounds;
                 const returnFocusTo = this.activePreview?.returnFocusTo;
+                // Tearing down the old element hands focus back to the note. Without this the
+                // preview stays open while the caret is in the editor, so typing edits the note.
+                const hadFocus = entry.element.contains(entry.doc.activeElement);
                 this.cleanupActivePreview();
                 this.disposeCachedPreview(entry);
                 fresh.restoreBounds = restoreBounds;
@@ -2905,6 +2941,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                     { left: live.left, top: live.top, width: live.width, height: live.height });
                 this.updateExpandButton(fresh.element, Boolean(restoreBounds));
                 if (returnFocusTo && this.activePreview) this.activePreview.returnFocusTo = returnFocusTo;
+                if (hadFocus) this.focusActivePreview();
             } catch { cancel(); }
         };
         const timeout = win.setTimeout(cancel, 30000);
@@ -3484,7 +3521,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.settingsWrite = write.catch(() => undefined);
         await write;
         if (this.unloaded) return;
-        for (const doc of this.handledDocuments) this.applyDisplaySettings(doc);
+        for (const doc of this.handledDocuments) {
+            this.applyDisplaySettings(doc);
+            // Turning the inline button off while it is on screen used to leave it there,
+            // with a stale hover zone that stopped the next mouse move re-evaluating it.
+            this.hideEditorHoverUi(doc);
+        }
         this.refreshPreviewPinButtons();
     }
 
@@ -5025,8 +5067,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             .replace(/\]/g, '\\]')
             // Obsidian renders inline HTML, so an issue titled `<Select> loses focus` would
             // vanish from the note — and `<input type="date">` would render a real widget.
-            .replace(/</g, '\\<')
-            .replace(/>/g, '\\>');
+            // Only `<` opens a tag; escaping `>` as well just shows a backslash in the editor.
+            .replace(/</g, '\\<');
     }
 
     private formatMarkdownDestination(url: string): string {
