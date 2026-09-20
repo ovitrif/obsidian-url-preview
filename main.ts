@@ -97,24 +97,131 @@ interface InlinePreviewControlsState {
 }
 
 interface PreviewWebviewElement extends HTMLElement {
+    getWebContentsId(): number;
     canGoBack(): boolean;
     canGoForward(): boolean;
     executeJavaScript(code: string): Promise<unknown>;
     getURL(): string;
     goBack(): void;
     goForward(): void;
+    canGoToOffset(offset: number): boolean;
+    goToOffset(offset: number): void;
     loadURL(url: string): Promise<void>;
 }
 
 type PreviewFrameElement = HTMLIFrameElement | PreviewWebviewElement;
 
 interface PreviewFrameController {
+    cleanupKeyboard?: () => void;
     currentUrl: string;
     element: PreviewFrameElement;
     fallbackHistory: string[];
     fallbackHistoryIndex: number;
     isReady: boolean;
     startLoading?: () => void;
+}
+
+interface CachedPreview {
+    url: string;
+    doc: Document;
+    element: HTMLElement;
+    controller: PreviewFrameController;
+    dock?: PreviewSidePanel;
+    floatingBounds?: { left: number; top: number; width: number; height: number };
+    floatingAnchor?: HTMLElement;
+    cancelRefresh?: () => void;
+}
+
+class PreviewSidePanel {
+    private observer: ResizeObserver;
+    readonly divider: HTMLElement;
+    private stopDrag?: () => void;
+    private ratio: number;
+
+    constructor(readonly entry: CachedPreview, readonly host: HTMLElement,
+        private content: HTMLElement, private plugin: LinkPreviewPlugin) {
+        entry.dock = this;
+        this.ratio = Number.isFinite(plugin.settings.sidePanelRatio) ? plugin.settings.sidePanelRatio : 0.5;
+        host.addClass('url-preview-has-side-panel');
+        entry.element.addClass('is-docked');
+        entry.element.removeClass('is-cached');
+        this.divider = entry.doc.body.createDiv('url-preview-divider');
+        this.divider.setAttr('role', 'separator');
+        this.divider.setAttr('aria-label', 'Resize note and preview');
+        this.divider.setAttr('aria-orientation', 'vertical');
+        this.divider.tabIndex = 0;
+        this.divider.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            this.stopDrag?.();
+            entry.element.addClass('is-divider-resizing');
+            this.divider.addClass('is-dragging');
+            const shield = entry.doc.body.createDiv('url-preview-divider-shield');
+            const move = (e: PointerEvent) => {
+                const rect = host.getBoundingClientRect();
+                if (rect.width) this.setRatio((e.clientX - rect.left) / rect.width);
+            };
+            const stop = () => {
+                entry.doc.removeEventListener('pointermove', move);
+                entry.doc.removeEventListener('pointerup', stop);
+                entry.doc.removeEventListener('pointercancel', stop);
+                entry.doc.defaultView?.removeEventListener('blur', stop);
+                shield.remove();
+                entry.element.removeClass('is-divider-resizing');
+                this.divider.removeClass('is-dragging');
+                this.stopDrag = undefined;
+                plugin.settings.sidePanelRatio = this.ratio;
+                void plugin.saveSettings();
+            };
+            this.stopDrag = stop;
+            entry.doc.addEventListener('pointermove', move);
+            entry.doc.addEventListener('pointerup', stop);
+            entry.doc.addEventListener('pointercancel', stop);
+            entry.doc.defaultView?.addEventListener('blur', stop);
+        });
+        this.divider.addEventListener('keydown', event => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            event.preventDefault();
+            this.setRatio(this.ratio + (event.key === 'ArrowLeft' ? -0.02 : 0.02));
+            plugin.settings.sidePanelRatio = this.ratio;
+            void plugin.saveSettings();
+        });
+        this.observer = new ResizeObserver(() => this.updateBounds());
+        this.observer.observe(host);
+        this.observer.observe(content);
+        this.updateBounds();
+    }
+
+    updateBounds() {
+        if (!this.host.isConnected) { this.close(); return; }
+        const width = this.host.getBoundingClientRect().width;
+        if (width > 0) {
+            const minimum = Math.min(280 / width, 0.5);
+            const ratio = Math.min(1 - minimum, Math.max(minimum, this.ratio));
+            this.host.setCssProps({ '--url-preview-note-width': `${ratio * 100}%` });
+            this.divider.setAttr('aria-valuenow', String(Math.round(ratio * 100)));
+        }
+        this.plugin.positionDockPreview(this.entry, this.host, this.content);
+        const rect = this.entry.element.getBoundingClientRect();
+        this.divider.toggleClass('is-hidden', this.entry.element.hasClass('is-cached'));
+        this.divider.setCssStyles({ left: `${rect.left - 4}px`, top: `${rect.top}px`, height: `${rect.height}px` });
+    }
+
+    private setRatio(ratio: number) {
+        const width = this.host.getBoundingClientRect().width;
+        const minimum = width > 0 ? Math.min(280 / width, 0.5) : 0.5;
+        this.ratio = Math.min(1 - minimum, Math.max(minimum, ratio));
+        this.updateBounds();
+    }
+
+    close(trim = true) {
+        this.stopDrag?.();
+        this.observer.disconnect();
+        this.divider.remove();
+        this.host.removeClass('url-preview-has-side-panel');
+        this.host.setCssProps({ '--url-preview-note-width': '' });
+        this.plugin.hideDockPreview(this.entry, trim);
+    }
 }
 
 interface GitHubPullRequestBadgeObserver {
@@ -146,7 +253,6 @@ interface GitHubHoverCardState {
     showTimeout?: number;
 }
 
-type GitHubAuthState = 'signed-in' | 'signed-out' | 'unknown';
 
 interface RequireHost {
     require?: (moduleName: string) => unknown;
@@ -185,7 +291,6 @@ const GITHUB_HOVER_CARD_GAP = 12;
 const GITHUB_HOVER_CARD_HIDE_DELAY_MS = 300;
 const GITHUB_HOVER_CARD_MARGIN = 10;
 const GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH = 320;
-const MIN_PREVIEW_LOADING_MS = 750;
 const TOOLBAR_TOOLTIP_OPTIONS = {
     classes: ['url-preview-toolbar-tooltip'],
     delay: 250,
@@ -199,7 +304,7 @@ function shouldCopyFullGitHubReference(event?: MouseEvent | KeyboardEvent): bool
     return Platform.isMacOS ? event.metaKey : event.altKey;
 }
 
-function getGitHubReferenceCopyAriaLabel(): string {
+function getGitHubReferenceCopyDescription(): string {
     const modifierLabel = Platform.isMacOS ? 'Command' : 'Alt';
     return `Copy #id. Hold ${modifierLabel} to copy owner/repo#id`;
 }
@@ -257,7 +362,7 @@ class GitHubPullRequestBadgeWidget extends WidgetType {
         const badge = view.dom.ownerDocument.createElement('span');
         badge.addClass('url-preview-github-pr-badge');
         badge.textContent = `#${this.githubId}`;
-        badge.setAttr('aria-label', getGitHubReferenceCopyAriaLabel());
+        badge.setAttr('aria-description', getGitHubReferenceCopyDescription());
         badge.setAttr('role', 'button');
         badge.setAttr('tabindex', '0');
         badge.addEventListener('click', (event) => {
@@ -296,9 +401,13 @@ interface LinkPreviewSettings {
     showCloseButton: boolean;
     showGitHubPullRequestIds: boolean;
     showInlinePreviewButton: boolean;
+    showInlineExternalLinkIcon: boolean;
+    showGitHubHoverCard: boolean;
+    showLoadingIndicators: boolean;
     allowResize: boolean;
     persistResize: boolean;
     domainZoomLevels: Record<string, number>;
+    sidePanelRatio: number;
     persistedWidth?: number;
     persistedHeight?: number;
 }
@@ -323,9 +432,13 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'per
     showCloseButton: true,
     showGitHubPullRequestIds: true,
     showInlinePreviewButton: false,
+    showInlineExternalLinkIcon: true,
+    showGitHubHoverCard: true,
+    showLoadingIndicators: false,
     allowResize: true,
     persistResize: false,
     domainZoomLevels: {},
+    sidePanelRatio: 0.5,
     // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
@@ -349,9 +462,13 @@ export default class LinkPreviewPlugin extends Plugin {
     private githubPullRequestBadgeVersion = 0;
     private githubHoverCards = new Map<Document, GitHubHoverCardState>();
     private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
+    private previewCache = new Map<HTMLElement, CachedPreview>();
 
     async onload() {
         await this.loadSettings();
+        this.registerEvent(this.app.workspace.on('layout-change', () => {
+            for (const entry of this.previewCache.values()) entry.dock?.updateBounds();
+        }));
         await this.removeLegacyPreviewCache();
         
         // Defer setup until layout is ready
@@ -446,6 +563,7 @@ export default class LinkPreviewPlugin extends Plugin {
         const handleWindow = (doc: Document) => {
             if (this.handledDocuments.has(doc)) return;
             this.handledDocuments.add(doc);
+            this.applyDisplaySettings(doc);
 
             this.registerDomEvent(doc, 'mouseover', (e: MouseEvent) => {
                 this.lastMouseX = e.clientX;
@@ -513,6 +631,9 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
                 this.removeInlinePreviewControls(workspaceWindow.doc);
                 this.removeGitHubHoverCard(workspaceWindow.doc);
+                for (const entry of this.previewCache.values()) {
+                    if (entry.doc === workspaceWindow.doc) this.disposeCachedPreview(entry);
+                }
                 this.unregisterGitHubPullRequestBadges(workspaceWindow.doc);
                 this.handledDocuments.delete(workspaceWindow.doc);
             })
@@ -563,7 +684,11 @@ export default class LinkPreviewPlugin extends Plugin {
         const links = Array.from(doc.querySelectorAll('a[href]'));
         for (const link of links) {
             if (!(link instanceof HTMLAnchorElement)) continue;
-            if (link.closest('.hover-popup, .url-preview-inline-controls, .cm-editor')) continue;
+            // Kanban cards render their own number line; badges there only crowd the card.
+            if (link.closest('.hover-popup, .url-preview-inline-controls, .cm-editor, .kanban-plugin')) {
+                this.removeGitHubPullRequestBadge(link);
+                continue;
+            }
 
             const githubReference = this.getGitHubIssueReference(link.href);
             if (!githubReference) {
@@ -581,6 +706,16 @@ export default class LinkPreviewPlugin extends Plugin {
 
             this.upsertGitHubPullRequestBadge(link, githubReference);
         }
+
+        // A badge belongs directly after its link; anything else is an orphan left by other DOM edits.
+        doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => {
+            // Editor badges are CodeMirror widgets owned by the editor extension, never orphans.
+            if (badge.closest('.cm-editor')) return;
+            const previous = badge.previousElementSibling;
+            if (!(previous instanceof HTMLAnchorElement) || !this.getGitHubIssueReference(previous.href)) {
+                badge.remove();
+            }
+        });
     }
 
     private upsertGitHubPullRequestBadge(link: HTMLAnchorElement, githubReference: GitHubIssueReference) {
@@ -601,7 +736,8 @@ export default class LinkPreviewPlugin extends Plugin {
 
     private configureGitHubPullRequestBadge(badge: HTMLElement, githubReference: GitHubIssueReference) {
         badge.textContent = `#${githubReference.id}`;
-        badge.setAttr('aria-label', getGitHubReferenceCopyAriaLabel());
+        badge.removeAttribute('aria-label');
+        badge.setAttr('aria-description', getGitHubReferenceCopyDescription());
         badge.setAttr('data-github-id', githubReference.id);
         badge.setAttr('data-github-reference', githubReference.shortReference);
         badge.setAttr('role', 'button');
@@ -824,6 +960,11 @@ export default class LinkPreviewPlugin extends Plugin {
     }
 
     private updateGitHubHoverCardAtPoint(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
+        if (!this.settings.showGitHubHoverCard) {
+            this.hideGitHubHoverCard(doc);
+            return;
+        }
+
         const target = doc.elementFromPoint(point.x, point.y);
         const state = this.githubHoverCards.get(doc);
 
@@ -2029,9 +2170,29 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {
         this.cleanupActivePreview();
         const doc = link.ownerDocument;
+        const sidePanel = [...this.previewCache.values()].find(entry => entry.doc === doc && entry.dock);
+        if (sidePanel?.dock) {
+            if (this.getPreviewFrameUrl(sidePanel.controller) !== url) {
+                this.navigatePreviewFrame(sidePanel.controller, url);
+                sidePanel.url = url;
+            }
+            sidePanel.dock.updateBounds();
+            return;
+        }
+        const cached = [...this.previewCache.values()].find(entry =>
+            entry.doc === doc && entry.url === url && entry.element.isConnected);
+        const entry = cached ?? this.createCachedPreview(link, url);
+        this.activateCachedPreview(entry, link, hoverElement, sourceKey);
+        if (cached) void this.refreshCachedPreview(entry);
+        this.trimPreviewCache();
+    }
+
+    private createCachedPreview(link: HTMLElement, url: string): CachedPreview {
+        const doc = link.ownerDocument;
         const rect = link.getBoundingClientRect();
         const previewEl = this.createPreviewElement(rect, doc);
         const frameController = this.createPreviewFrame(doc, url);
+        const entry: CachedPreview = { url, doc, element: previewEl, controller: frameController };
 
         if (this.shouldShowToolbar()) {
             this.createButtons(previewEl, frameController);
@@ -2046,13 +2207,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         loading.addClass('loading-spinner');
         loading.setAttr('aria-label', 'Loading preview');
         loading.setAttr('role', 'status');
+        const pageLoading = wrapper.createDiv('preview-page-loading');
+        pageLoading.setAttr('role', 'status');
+        pageLoading.setAttr('aria-label', 'Loading page');
         this.bindPreviewFrame(previewEl, frameController, loading);
-
-        const cleanup = () => {
-            void this.flushPreviewSessionStorage();
-            previewEl.remove();
-            this.activePreview = undefined;
-        };
 
         // Add preview hover handlers
         previewEl.addEventListener('mouseenter', () => {
@@ -2063,10 +2221,32 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         });
 
         previewEl.addEventListener('mouseleave', () => {
-            if (!this.settings.stickyPopup) {
+            if (!entry.dock && !this.settings.stickyPopup) {
                 this.startCleanupTimer();
             }
         });
+
+        if (this.settings.allowResize) this.createResizeHandles(previewEl);
+        doc.body.appendChild(previewEl);
+        this.applyPreviewViewportProps(previewEl, url);
+        this.navigatePreviewFrame(frameController, url);
+        return entry;
+    }
+
+    private activateCachedPreview(entry: CachedPreview, link: HTMLElement, hoverElement: HTMLElement, sourceKey?: string,
+        bounds?: { left: number; top: number; width: number; height: number }) {
+        const { element: previewEl, doc } = entry;
+        previewEl.removeClass('is-cached', 'is-refreshing', 'is-docked');
+        const win = doc.defaultView ?? window;
+        // A refreshed page already has its final viewport and restored scroll.
+        // Resizing it again here can trigger the website's scroll anchoring.
+        if (!bounds) {
+            this.applyPreviewBounds(previewEl, this.calculatePreviewBounds(link.getBoundingClientRect(), {
+                width: win.innerWidth, height: win.innerHeight,
+            }));
+        }
+        this.previewCache.delete(previewEl);
+        this.previewCache.set(previewEl, entry);
 
         // Add click-outside handler for sticky popup mode
         let clickOutsideHandler: ((e: MouseEvent) => void) | undefined;
@@ -2078,28 +2258,190 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 }
             };
             // Delay adding listener to avoid immediate trigger from the click that might have opened it
-            setTimeout(() => {
-                doc.addEventListener('click', clickOutsideHandler!);
-            }, 0);
+            // The opening click is already being dispatched; attach after it finishes.
         }
-
-        // Update cleanup to remove click handler
-        const originalCleanup = cleanup;
+        const clickTimer = win.setTimeout(() => {
+            if (clickOutsideHandler && this.activePreview?.element === previewEl) {
+                doc.addEventListener('click', clickOutsideHandler);
+            }
+        }, 0);
         const cleanupWithClickHandler = () => {
+            win.clearTimeout(clickTimer);
             if (clickOutsideHandler) {
                 doc.removeEventListener('click', clickOutsideHandler);
             }
-            originalCleanup();
+            entry.cancelRefresh?.();
+            entry.url = this.getPreviewFrameUrl(entry.controller);
+            previewEl.addClass('is-cached');
+            void this.flushPreviewSessionStorage();
+            this.activePreview = undefined;
         };
-
-        if (this.settings.allowResize) {
-            this.createResizeHandles(previewEl);
-        }
-
-        doc.body.appendChild(previewEl);
-        this.applyPreviewViewportProps(previewEl, url);
-        this.navigatePreviewFrame(frameController, url);
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
+    }
+
+    private disposeCachedPreview(entry: CachedPreview) {
+        // Remove first so closing the panel cannot evict this entry recursively.
+        this.previewCache.delete(entry.element);
+        entry.dock?.close();
+        entry.cancelRefresh?.();
+        entry.controller.cleanupKeyboard?.();
+        entry.element.remove();
+        this.previewCache.delete(entry.element);
+    }
+
+    private trimPreviewCache() {
+        for (const entry of this.previewCache.values()) {
+            if (this.previewCache.size <= 5) break;
+            if (entry.dock || entry.element === this.activePreview?.element) continue;
+            this.disposeCachedPreview(entry);
+        }
+    }
+
+    private executeInPreview(frame: PreviewFrameElement, code: string): Promise<unknown> {
+        if (!this.isPreviewWebview(frame)) return Promise.reject(new Error('Desktop preview required'));
+        const remote = this.getRequireFunction()?.('@electron/remote') as {
+            webContents: { fromId(id: number): { mainFrame: { executeJavaScript(code: string): Promise<unknown> } } | undefined };
+        } | undefined;
+        const mainFrame = remote?.webContents.fromId(frame.getWebContentsId())?.mainFrame;
+        return mainFrame ? mainFrame.executeJavaScript(code) : frame.executeJavaScript(code);
+    }
+
+    private async readPreviewState(entry: CachedPreview): Promise<{ x: number; y: number; dirty: boolean }> {
+        const result = await this.executeInPreview(entry.controller.element, `JSON.stringify({
+            x: scrollX, y: scrollY,
+            dirty: !!window.__urlPreviewEdited || !!document.activeElement?.matches('input, textarea, [contenteditable="true"], [role="textbox"]')
+        })`);
+        if (typeof result !== 'string') throw new Error('Preview state unavailable');
+        return JSON.parse(result) as { x: number; y: number; dirty: boolean };
+    }
+
+    private async refreshCachedPreview(entry: CachedPreview) {
+        if (!this.isPreviewWebview(entry.controller.element)) return;
+        const active = this.activePreview;
+        if (active?.element !== entry.element) return;
+        try {
+            if ((await this.readPreviewState(entry)).dirty || this.activePreview !== active) return;
+        } catch { return; }
+        const url = this.getPreviewFrameUrl(entry.controller);
+        const fresh = this.createCachedPreview(active.link, url);
+        fresh.url = entry.url;
+        fresh.element.addClass('is-refreshing');
+        const bounds = entry.element.getBoundingClientRect();
+        this.applyPreviewBounds(fresh.element, { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height });
+        this.applyPreviewViewportProps(fresh.element, url);
+        let cancelled = false;
+        const win = entry.doc.defaultView ?? window;
+        const cancel = () => {
+            if (cancelled) return;
+            cancelled = true;
+            win.clearTimeout(timeout);
+            observer.disconnect();
+            this.disposeCachedPreview(fresh);
+            entry.cancelRefresh = undefined;
+        };
+        const observer = new MutationObserver(() => {
+            const loader = fresh.element.querySelector('.preview-loading');
+            if (loader?.classList.contains('is-error')) cancel();
+            else if (loader?.classList.contains('is-hidden') && !fresh.element.classList.contains('is-page-loading')) void replace();
+        });
+        let replacing = false;
+        const replace = async () => {
+            if (cancelled || replacing) return;
+            replacing = true;
+            try {
+                const state = await this.readPreviewState(entry);
+                if (cancelled || state.dirty || this.activePreview !== active ||
+                    this.getPreviewFrameUrl(entry.controller) !== url) { cancel(); return; }
+                await this.executeInPreview(fresh.controller.element, `new Promise(resolve => {
+                    history.scrollRestoration = 'manual';
+                    const anchorStyle = document.createElement('style');
+                    anchorStyle.textContent = 'html, body { overflow-anchor: none !important; scroll-behavior: auto !important; }';
+                    document.head.appendChild(anchorStyle);
+                    setTimeout(() => anchorStyle.remove(), 2000);
+                    const restore = () => {
+                        scrollTo({ left: ${Number(state.x)}, top: ${Number(state.y)}, behavior: 'instant' });
+                        resolve();
+                    };
+                    const timeout = setTimeout(restore, 200);
+                    requestAnimationFrame(() => requestAnimationFrame(() => {
+                        clearTimeout(timeout);
+                        restore();
+                    }));
+                })`);
+                const restored = await this.readPreviewState(fresh);
+                if (Math.abs(restored.x - state.x) > 2 || Math.abs(restored.y - state.y) > 2) { cancel(); return; }
+                const latest = await this.readPreviewState(entry);
+                if (cancelled || latest.dirty || this.activePreview !== active ||
+                    latest.x !== state.x || latest.y !== state.y || this.getPreviewFrameUrl(entry.controller) !== url) { cancel(); return; }
+                observer.disconnect();
+                win.clearTimeout(timeout);
+                cancelled = true;
+                entry.cancelRefresh = undefined;
+                this.cleanupActivePreview();
+                this.disposeCachedPreview(entry);
+                this.activateCachedPreview(fresh, active.link, active.link, active.sourceKey,
+                    { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height });
+            } catch { cancel(); }
+        };
+        const timeout = win.setTimeout(cancel, 30000);
+        entry.cancelRefresh = cancel;
+        fresh.controller.element.addEventListener('did-fail-load', event => {
+            if ('isMainFrame' in event && event.isMainFrame === false) return;
+            if ('errorCode' in event && event.errorCode === -3) return;
+            cancel();
+        });
+        fresh.controller.element.addEventListener('did-navigate', event => {
+            if ('httpResponseCode' in event && typeof event.httpResponseCode === 'number' && event.httpResponseCode >= 400) cancel();
+        });
+        observer.observe(fresh.element, { subtree: true, attributes: true, attributeFilter: ['class'] });
+    }
+
+    hideDockPreview(entry: CachedPreview, trim = true) {
+        entry.url = this.getPreviewFrameUrl(entry.controller);
+        entry.dock = undefined;
+        entry.element.removeClass('is-docked');
+        entry.element.addClass('is-cached');
+        this.updateDockButton(entry.element, false);
+        if (trim) this.trimPreviewCache();
+    }
+
+    positionDockPreview(entry: CachedPreview, host: HTMLElement, content: HTMLElement) {
+        const rect = host.getBoundingClientRect();
+        const page = content.getBoundingClientRect();
+        entry.element.toggleClass('is-cached', rect.width === 0 || page.height === 0);
+        this.applyPreviewBounds(entry.element, { left: page.right, top: page.top, width: Math.max(0, rect.right - page.right), height: page.height });
+        this.applyPreviewViewportProps(entry.element, entry.controller.currentUrl);
+    }
+
+    private dockPreview(container: HTMLElement) {
+        const entry = this.previewCache.get(container);
+        if (entry?.dock) {
+            const anchor = entry.floatingAnchor?.isConnected ? entry.floatingAnchor : entry.dock.host;
+            entry.dock.close(false);
+            this.cleanupActivePreview();
+            this.activateCachedPreview(entry, anchor, anchor, undefined, entry.floatingBounds);
+            return;
+        }
+        const note = this.app.workspace.getMostRecentLeaf();
+        const host = note?.view.containerEl;
+        const content = host?.querySelector<HTMLElement>(':scope > .view-content');
+        if (!entry || !host || !content || host.ownerDocument !== entry.doc) return;
+        for (const other of this.previewCache.values()) {
+            if (other.doc === entry.doc) other.dock?.close();
+        }
+        const rect = container.getBoundingClientRect();
+        entry.floatingBounds = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+        entry.floatingAnchor = this.activePreview?.link;
+        this.cleanupActivePreview();
+        new PreviewSidePanel(entry, host, content, this);
+        this.updateDockButton(container, true);
+    }
+
+    private updateDockButton(container: HTMLElement, docked: boolean) {
+        const button = container.querySelector<HTMLElement>('.preview-dock-button');
+        if (!button) return;
+        setIcon(button, docked ? 'panels-top-left' : 'log-out');
+        this.setToolbarTooltip(button, docked ? 'Return to floating preview' : 'Open in right-side panel');
     }
 
     private createPreviewFrame(doc: Document, url: string): PreviewFrameController {
@@ -2139,40 +2481,47 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         controller: PreviewFrameController,
         loading: HTMLElement
     ) {
-        let loadingStartedAt = Date.now();
         let loadSequence = 0;
         let failedSequence = -1;
+        let revealingSequence = -1;
+        let hasRevealedInitialPage = false;
         const frame = controller.element;
         const startLoading = () => {
+            previewEl.addClass('is-page-loading');
+            if (hasRevealedInitialPage) return;
+
             loadSequence++;
             failedSequence = -1;
-            loadingStartedAt = Date.now();
-            frame.removeClass('is-loaded');
             loading.textContent = '';
             loading.removeClass('is-error');
             loading.removeClass('is-hidden');
         };
-        const finishLoading = () => {
+        const revealContent = () => {
+            if (hasRevealedInitialPage) return;
             const sequence = loadSequence;
-            if (failedSequence === sequence) return;
+            if (failedSequence === sequence || revealingSequence === sequence) return;
+            revealingSequence = sequence;
 
             void this.revealLoadedPreviewFrame(
                 frame,
                 loading,
-                loadingStartedAt,
-                () => sequence === loadSequence
+                () => sequence === loadSequence && failedSequence !== sequence
             ).then((didReveal) => {
                 if (!didReveal || !frame.isConnected) return;
 
-                if (this.isGitHubUrl(controller.currentUrl)) {
-                    void this.updateGitHubAuthControls(previewEl);
-                }
-                void this.flushPreviewSessionStorage();
+                hasRevealedInitialPage = true;
             });
+        };
+        const finishLoading = () => {
+            previewEl.removeClass('is-page-loading');
+            revealContent();
+            void this.flushPreviewSessionStorage();
         };
         const failLoading = (event: Event) => {
             if ('isMainFrame' in event && event.isMainFrame === false) return;
             if ('errorCode' in event && event.errorCode === -3) return;
+            previewEl.removeClass('is-page-loading');
+            if (hasRevealedInitialPage) return;
 
             failedSequence = loadSequence;
             loading.textContent = 'Failed to load preview';
@@ -2194,7 +2543,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (this.isPreviewWebview(frame)) {
             frame.addEventListener('dom-ready', () => {
                 controller.isReady = true;
+                void this.executeInPreview(frame, `
+                    window.__urlPreviewEdited = false;
+                    document.addEventListener('input', () => { window.__urlPreviewEdited = true; }, true);
+                `).catch(() => undefined);
+                this.bindPreviewEscape(previewEl, controller);
                 updateNavigation();
+                revealContent();
             });
             frame.addEventListener('did-start-loading', startLoading);
             frame.addEventListener('did-stop-loading', finishLoading);
@@ -2215,27 +2570,47 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         startLoading();
     }
 
+    private bindPreviewEscape(previewEl: HTMLElement, controller: PreviewFrameController) {
+        const frame = controller.element;
+        if (!this.isPreviewWebview(frame) || controller.cleanupKeyboard) return;
+        const requireFn = this.getRequireFunction();
+        if (!requireFn) return;
+        type Input = { type: string; key: string; isAutoRepeat: boolean; alt: boolean; control: boolean; meta: boolean; shift: boolean };
+        type Listener = (event: unknown, input: Input) => void;
+        type Contents = { on(event: string, listener: Listener): void; removeListener(event: string, listener: Listener): void; isDestroyed(): boolean };
+        try {
+            const remote = requireFn('@electron/remote') as { webContents: { fromId(id: number): Contents | undefined } };
+            const contents = remote.webContents.fromId(frame.getWebContentsId());
+            if (!contents) return;
+            let lastEscape = 0;
+            const listener: Listener = (_event, input) => {
+                if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+                if (input.key !== 'Escape' || input.alt || input.control || input.meta || input.shift) {
+                    lastEscape = 0;
+                    return;
+                }
+                const now = Date.now();
+                if (lastEscape && now - lastEscape <= 500 && this.activePreview?.element === previewEl) {
+                    this.cleanupActivePreview();
+                } else {
+                    lastEscape = now;
+                }
+            };
+            contents.on('before-input-event', listener);
+            controller.cleanupKeyboard = () => {
+                if (!contents.isDestroyed()) contents.removeListener('before-input-event', listener);
+            };
+        } catch {
+            // Embedded keyboard access is only available in desktop hosts exposing Electron remote.
+        }
+    }
+
     private async revealLoadedPreviewFrame(
         frame: PreviewFrameElement,
         loading: HTMLElement,
-        loadingStartedAt: number,
         isCurrentLoad: () => boolean
     ): Promise<boolean> {
         await this.waitForPreviewFramePaint(frame);
-        if (!isCurrentLoad() || !frame.isConnected) return false;
-
-        const elapsed = Date.now() - loadingStartedAt;
-        const remainingMinimum = Math.max(0, MIN_PREVIEW_LOADING_MS - elapsed);
-        if (remainingMinimum > 0) {
-            await new Promise<void>((resolve) => {
-                const win = frame.ownerDocument.defaultView ?? window;
-                win.setTimeout(resolve, remainingMinimum);
-            });
-        }
-        if (!isCurrentLoad() || !frame.isConnected) return false;
-
-        frame.addClass('is-loaded');
-        await this.waitForAnimationFrames(frame.ownerDocument, 1);
         if (!isCurrentLoad() || !frame.isConnected) return false;
 
         loading.addClass('is-hidden');
@@ -2245,22 +2620,61 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private async waitForPreviewFramePaint(frame: PreviewFrameElement) {
         if (this.isPreviewWebview(frame)) {
             try {
-                await frame.executeJavaScript(
-                    'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+                // The webview helper defers execution until load completes. Execute on
+                // the main frame directly so slow subresources do not delay the reveal.
+                const requireFn = this.getRequireFunction();
+                const remote = requireFn?.('@electron/remote') as {
+                    webContents?: { fromId(id: number): { mainFrame: { executeJavaScript(code: string): Promise<unknown> } } | undefined };
+                } | undefined;
+                const mainFrame = remote?.webContents?.fromId(frame.getWebContentsId())?.mainFrame;
+                const execute = mainFrame
+                    ? (code: string) => mainFrame.executeJavaScript(code)
+                    : (code: string) => frame.executeJavaScript(code);
+                await execute(
+                    `new Promise((resolve) => {
+                        if (performance.getEntriesByName('first-contentful-paint').length) {
+                            resolve();
+                            return;
+                        }
+                        const observer = new PerformanceObserver((list) => {
+                            if (list.getEntries().some(entry => entry.name === 'first-contentful-paint')) done();
+                        });
+                        // Some embedded documents expose no paint entries. Wait for
+                        // rendered text or media, then let the guest paint it.
+                        let painting = false;
+                        const checkContent = () => {
+                            if (painting || !document.body) return;
+                            const media = Array.from(document.querySelectorAll('img, svg, canvas, video'))
+                                .some(element => {
+                                    const rect = element.getBoundingClientRect();
+                                    return rect.width > 0 && rect.height > 0 &&
+                                        (!(element instanceof HTMLImageElement) || element.naturalWidth > 0);
+                                });
+                            if (!document.body.innerText.trim() && !media) return;
+                            painting = true;
+                            requestAnimationFrame(() => requestAnimationFrame(done));
+                        };
+                        const done = () => {
+                            observer.disconnect();
+                            window.removeEventListener('load', done);
+                            clearInterval(contentCheck);
+                            resolve();
+                        };
+                        const contentCheck = setInterval(checkContent, 100);
+                        // Completed blank documents need no artificial waiting period.
+                        window.addEventListener('load', done, { once: true });
+                        observer.observe({ type: 'paint', buffered: true });
+                        if (document.readyState === 'complete') {
+                            done();
+                            return;
+                        }
+                        checkContent();
+                    })`
                 );
                 return;
             } catch {
-                // Fall through to host animation frames if the guest cannot execute JavaScript.
+                // Navigation may replace the document while waiting for its paint timing.
             }
-        }
-
-        await this.waitForAnimationFrames(frame.ownerDocument, 2);
-    }
-
-    private async waitForAnimationFrames(doc: Document, count: number) {
-        const win = doc.defaultView ?? window;
-        for (let frame = 0; frame < count; frame++) {
-            await new Promise<void>((resolve) => win.requestAnimationFrame(() => resolve()));
         }
     }
 
@@ -2414,10 +2828,23 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     async saveSettings() {
         await this.saveData(this.settings);
+        for (const doc of this.handledDocuments) this.applyDisplaySettings(doc);
+    }
+
+    private applyDisplaySettings(doc: Document) {
+        if (!this.settings.showGitHubHoverCard) this.hideGitHubHoverCard(doc);
+        doc.body.addClass('url-preview-inline-links');
+        doc.body.toggleClass('url-preview-hide-external-link-icon', !this.settings.showInlineExternalLinkIcon);
+        doc.body.toggleClass('url-preview-hide-loading-indicators', !this.settings.showLoadingIndicators);
     }
 
     onunload() {
+        for (const doc of this.handledDocuments) {
+            doc.body.removeClass('url-preview-inline-links', 'url-preview-hide-external-link-icon');
+            doc.body.removeClass('url-preview-hide-loading-indicators');
+        }
         this.cleanupActivePreview();
+        for (const entry of this.previewCache.values()) this.disposeCachedPreview(entry);
         for (const doc of this.inlinePreviewControls.keys()) {
             this.removeInlinePreviewControls(doc);
         }
@@ -2509,7 +2936,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private removeOrphanedPreviews() {
         for (const doc of this.handledDocuments) {
-            doc.querySelectorAll('.hover-popup').forEach(el => el.remove());
+            doc.querySelectorAll<HTMLElement>('.hover-popup:not(.is-refreshing)').forEach(el => {
+                if (!this.previewCache.has(el)) el.remove();
+            });
         }
     }
 
@@ -2545,25 +2974,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
     }
 
-    private getGitHubLoginUrl(returnUrl: string): string {
-        try {
-            const githubUrl = new URL(returnUrl);
-            const returnPath = `${githubUrl.pathname}${githubUrl.search}${githubUrl.hash}`;
-            return `https://github.com/login?return_to=${encodeURIComponent(returnPath)}`;
-        } catch {
-            return 'https://github.com/login';
-        }
-    }
-
-    private getGitHubLogoutUrl(returnUrl: string): string {
-        try {
-            const githubUrl = new URL(returnUrl);
-            const returnPath = `${githubUrl.pathname}${githubUrl.search}${githubUrl.hash}`;
-            return `https://github.com/logout?return_to=${encodeURIComponent(returnPath)}`;
-        } catch {
-            return 'https://github.com/logout';
-        }
-    }
 
     private getRequireFunction(): ((moduleName: string) => unknown) | null {
         const windowRequire = (window as Window & RequireHost).require;
@@ -2589,9 +2999,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
     }
 
-    private getElectronCookies(): ElectronCookies | null {
-        return this.getElectronSession()?.cookies ?? null;
-    }
 
     private async flushPreviewSessionStorage() {
         const electronSession = this.getElectronSession();
@@ -2604,27 +3011,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
     }
 
-    private async getGitHubAuthState(): Promise<GitHubAuthState> {
-        const cookies = this.getElectronCookies();
-        if (!cookies) return 'unknown';
-
-        try {
-            const githubCookies = await cookies.get({ url: 'https://github.com/' });
-            const hasAuthCookie = githubCookies.some((cookie) =>
-                cookie.value.length > 0 &&
-                (
-                    cookie.name === 'dotcom_user' ||
-                    cookie.name === 'user_session' ||
-                    cookie.name === '__Host-user_session_same_site' ||
-                    (cookie.name === 'logged_in' && cookie.value === 'yes')
-                )
-            );
-
-            return hasAuthCookie ? 'signed-in' : 'signed-out';
-        } catch {
-            return 'unknown';
-        }
+    private getElectronCookies(): ElectronCookies | null {
+        return this.getElectronSession()?.cookies ?? null;
     }
+
 
     private getPreviewDomain(url: string): string | null {
         try {
@@ -2702,13 +3092,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         this.createZoomControls(buttons, container, () => this.getPreviewFrameUrl(frameController));
 
-        if (this.isGitHubUrl(frameController.currentUrl)) {
-            this.createGitHubAuthButton(buttons, frameController);
-        }
 
         if (this.settings.allowResize) {
             let restoreBounds: { left: number, top: number, width: number, height: number } | null = null;
-            const resizeBtn = buttons.createEl('button', { cls: 'clickable-icon' });
+            const resizeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-expand-button' });
             setIcon(resizeBtn, 'maximize-2');
             this.setToolbarTooltip(resizeBtn, 'Expand preview');
             resizeBtn.addEventListener('click', (e) => {
@@ -2735,6 +3122,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             });
         }
 
+        const dockButton = buttons.createEl('button', { cls: 'clickable-icon preview-dock-button' });
+        setIcon(dockButton, 'log-out');
+        this.setToolbarTooltip(dockButton, 'Open in right-side panel');
+        dockButton.addEventListener('click', event => {
+            event.stopPropagation();
+            this.dockPreview(container);
+        });
+
         if (this.settings.showOpenInBrowser) {
             const openBtn = buttons.createEl('button', { cls: 'clickable-icon' });
             setIcon(openBtn, 'external-link');
@@ -2751,7 +3146,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.setToolbarTooltip(closeBtn, 'Close preview');
             closeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.cleanupActivePreview();
+                const entry = this.previewCache.get(container);
+                if (entry?.dock) entry.dock.close();
+                else this.cleanupActivePreview();
             });
         }
     }
@@ -2848,7 +3245,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const frame = controller.element;
         if (this.isPreviewWebview(frame)) {
             try {
-                return frame.canGoBack();
+                return frame.canGoToOffset(-1);
             } catch {
                 return false;
             }
@@ -2860,7 +3257,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const frame = controller.element;
         if (this.isPreviewWebview(frame)) {
             try {
-                return frame.canGoForward();
+                return frame.canGoToOffset(1);
             } catch {
                 return false;
             }
@@ -2872,7 +3269,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private goBackInPreview(controller: PreviewFrameController) {
         const frame = controller.element;
         if (this.isPreviewWebview(frame)) {
-            if (this.canGoBackInPreview(controller)) frame.goBack();
+            if (this.canGoBackInPreview(controller)) frame.goToOffset(-1);
             return;
         }
         if (!this.canGoBackInPreview(controller)) return;
@@ -2885,7 +3282,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private goForwardInPreview(controller: PreviewFrameController) {
         const frame = controller.element;
         if (this.isPreviewWebview(frame)) {
-            if (this.canGoForwardInPreview(controller)) frame.goForward();
+            if (this.canGoForwardInPreview(controller)) frame.goToOffset(1);
             return;
         }
         if (!this.canGoForwardInPreview(controller)) return;
@@ -2906,42 +3303,6 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return this.normalizeUrl(`https://${trimmed}`);
     }
 
-    private createGitHubAuthButton(buttons: HTMLElement, controller: PreviewFrameController) {
-        const authBtn = buttons.createEl('button', { cls: 'clickable-icon preview-github-auth-button' });
-        this.configureGitHubAuthButton(authBtn, 'unknown');
-        void this.updateGitHubAuthButton(authBtn);
-
-        authBtn.addEventListener('click', (event) => {
-            event.stopPropagation();
-            const authState = authBtn.getAttribute('data-github-auth-state');
-            const url = this.getPreviewFrameUrl(controller);
-            this.navigatePreviewFrame(
-                controller,
-                authState === 'signed-in' ? this.getGitHubLogoutUrl(url) : this.getGitHubLoginUrl(url)
-            );
-        });
-    }
-
-    private configureGitHubAuthButton(button: HTMLElement, state: GitHubAuthState) {
-        const isSignedIn = state === 'signed-in';
-        button.setAttr('data-github-auth-state', isSignedIn ? 'signed-in' : 'signed-out');
-        setIcon(button, isSignedIn ? 'log-out' : 'log-in');
-        this.setToolbarTooltip(button, isSignedIn ? 'Sign out of GitHub' : 'Sign in to GitHub');
-    }
-
-    private async updateGitHubAuthControls(previewEl: HTMLElement) {
-        const authButton = previewEl.querySelector('.preview-github-auth-button');
-        if (authButton instanceof HTMLElement) {
-            await this.updateGitHubAuthButton(authButton);
-        }
-    }
-
-    private async updateGitHubAuthButton(button: HTMLElement) {
-        const authState = await this.getGitHubAuthState();
-        if (!button.isConnected) return;
-
-        this.configureGitHubAuthButton(button, authState);
-    }
 
     private createSizeControls(buttons: HTMLElement, previewEl: HTMLElement) {
         const sizeControls = buttons.createDiv('preview-size-controls');
@@ -3922,13 +4283,13 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         }
 
         const behaviorGroup = new SettingGroup(containerEl)
-            .setHeading('Behavior')
+            .setHeading('Preview window')
             .addClass('settings-group-no-margin');
 
         behaviorGroup.addSetting(setting => {
             setting
                 .setName('Sticky popup')
-                .setDesc('Keep popup open until escape or click outside (instead of closing when mouse leaves)')
+                .setDesc('Keep the preview open until escape or click outside. Inside a desktop preview page, press escape twice quickly to close.')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.stickyPopup)
                     .onChange(async (value) => {
@@ -3937,7 +4298,11 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     }));
         });
 
-        behaviorGroup.addSetting(setting => {
+        const inlineGroup = new SettingGroup(containerEl)
+            .setHeading('Inline links')
+            .addClass('settings-group-no-margin');
+
+        inlineGroup.addSetting(setting => {
             setting
                 .setName('Show preview button on link hover')
                 .setDesc('Show the eye button beside links while hovering')
@@ -3949,10 +4314,34 @@ class LinkPreviewSettingTab extends PluginSettingTab {
                     }));
         });
 
+        inlineGroup.addSetting(setting => {
+            setting
+                .setName('Show external-link icon')
+                .setDesc('Show Obsidian’s external-link icon beside link text in notes')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showInlineExternalLinkIcon)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showInlineExternalLinkIcon = value;
+                        await this.plugin.saveSettings();
+                    }));
+        });
+
+        inlineGroup.addSetting(setting => {
+            setting
+                .setName('Show GitHub hover cards')
+                .setDesc('Show a summary card when hovering GitHub links with the configured modifier keys')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showGitHubHoverCard)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showGitHubHoverCard = value;
+                        await this.plugin.saveSettings();
+                    }));
+        });
+
         behaviorGroup.addSetting(setting => {
             setting
                 .setName('Show open in browser button')
-                .setDesc('Show a button to open the URL in the default browser')
+                .setDesc('Show the open in browser button in the preview toolbar')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.showOpenInBrowser)
                     .onChange(async (value) => {
@@ -3974,6 +4363,18 @@ class LinkPreviewSettingTab extends PluginSettingTab {
         });
 
         behaviorGroup.addSetting(setting => {
+            setting
+                .setName('Show loading indicators')
+                .setDesc('Show an initial loading overlay and a small circular indicator during subsequent navigation')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.showLoadingIndicators)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showLoadingIndicators = value;
+                        await this.plugin.saveSettings();
+                    }));
+        });
+
+        inlineGroup.addSetting(setting => {
             setting
                 .setName('Show GitHub pull request numbers')
                 .setDesc('Show #123 beside GitHub pull request links')
