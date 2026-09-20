@@ -116,6 +116,7 @@ type PreviewFrameElement = HTMLIFrameElement | PreviewWebviewElement;
 
 interface PreviewFrameController {
     cleanupKeyboard?: () => void;
+    resetResolved?: () => void;
     muted?: boolean;
     currentUrl: string;
     // Where the page the entry was opened for settled after its redirects. A cached entry
@@ -135,6 +136,7 @@ const SIDE_PANEL_MIN_WIDTH = 280;
 // long as the user is plausibly coming back to it.
 const PREVIEW_CACHE_LIMIT = 5;
 const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
+const GITHUB_HOVER_CARD_CACHE_TTL_MS = 10 * 60 * 1000;
 
 interface CachedPreview {
     // `url` follows the page as it navigates and redirects, so on its own it stops matching
@@ -530,6 +532,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private githubPullRequestBadgeVersion = 0;
     private githubHoverCards = new Map<Document, GitHubHoverCardState>();
     private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
+    private githubHoverCardCachedAt = new Map<string, number>();
     private documentScopes = new Map<Document, Component>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
     private previewRequest = 0;
@@ -802,6 +805,12 @@ export default class LinkPreviewPlugin extends Plugin {
                 }
             }, { capture: true });
 
+            // The card is anchored to a viewport point, so scrolling leaves it pinned over
+            // whatever moved under it, and its hover zone goes stale with it.
+            scope.registerDomEvent(doc, 'scroll', () => {
+                this.hideGitHubHoverCard(doc);
+            }, { capture: true, passive: true });
+
             const win = doc.defaultView;
             if (win) {
                 scope.registerDomEvent(win, 'blur', () => {
@@ -904,7 +913,14 @@ export default class LinkPreviewPlugin extends Plugin {
                 continue;
             }
 
-            const githubReference = this.getGitHubIssueReference(link.href);
+            // `www.github.com/...` only becomes a reference after normalisation, which the
+            // editor path already does; without it the same link got a badge there and none
+            // here. Obsidian's own hover popover is not ours to write into.
+            if (link.closest('.popover')) {
+                this.removeGitHubPullRequestBadge(link);
+                continue;
+            }
+            const githubReference = this.getGitHubIssueReference(this.normalizeUrl(link.href) ?? link.href);
             if (!githubReference) {
                 this.removeGitHubPullRequestBadge(link);
                 continue;
@@ -1209,8 +1225,19 @@ export default class LinkPreviewPlugin extends Plugin {
         }
 
         if (state?.element.contains(target) || (state && this.isPointInGitHubHoverCardHoverZone(state, point))) {
-            this.clearGitHubHoverCardHideTimer(state);
-            return;
+            // The zone spans the line's full width so the card survives the pointer leaving
+            // the link — but in reading view a "line" is the whole paragraph, so it also
+            // covers every other GitHub link in it. A different one under the pointer has to
+            // win, or the second reference in a sentence can never be hovered.
+            const over = !state.element.contains(target) && this.areConfiguredModifiersPressed(modifiers)
+                ? this.findLinkElement(target, null, point)
+                : null;
+            const switching = over && over.element !== state.linkInfo?.element
+                && this.getGitHubIssueReference(over.url);
+            if (!switching) {
+                this.clearGitHubHoverCardHideTimer(state);
+                return;
+            }
         }
 
         if (!this.areConfiguredModifiersPressed(modifiers)) {
@@ -1462,17 +1489,27 @@ export default class LinkPreviewPlugin extends Plugin {
         });
         const titleCopyIcon = titleAction.createSpan('url-preview-github-hover-card-copy-icon');
         setIcon(titleCopyIcon, 'clipboard');
+        // When the page could not be read the card falls back to the note's own link text.
+        // Copying that would paste one note's wording as the issue's title, which is the
+        // same reason "Copy agent session title" refuses it.
+        const copyTitle = () => {
+            if (data.titleFromLinkText) {
+                new Notice('Could not read the title for this link');
+                return;
+            }
+            void this.copyTextToClipboard(displayTitle.full, 'title');
+        };
         titleAction.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            void this.copyTextToClipboard(displayTitle.full, 'title');
+            copyTitle();
         });
         titleAction.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
 
             event.preventDefault();
             event.stopPropagation();
-            void this.copyTextToClipboard(displayTitle.full, 'title');
+            copyTitle();
         });
 
         if (data.description) {
@@ -1546,11 +1583,24 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         reference: GitHubIssueReference
     ): Promise<GitHubHoverCardData> {
         const cached = this.githubHoverCardDataCache.get(linkInfo.url);
-        if (cached) return cached;
+        // An in-flight request is always current; a stored result goes stale, and an issue
+        // you closed yourself should not keep reading "Open" for the rest of the session.
+        if (cached && ('then' in cached || this.isGitHubHoverCardEntryFresh(linkInfo.url))) return cached;
+        this.githubHoverCardDataCache.delete(linkInfo.url);
+        this.githubHoverCardCachedAt.delete(linkInfo.url);
 
         const promise = this.fetchGitHubHoverCardData(linkInfo, reference)
             .then((data) => {
+                // A signed-out or gated page answers 200 with a login title, so the fetch
+                // resolves with the note's own link text. Caching that would stand in for the
+                // real title all session, which is what the catch below exists to prevent.
+                if (data.titleFromLinkText) {
+                    this.githubHoverCardDataCache.delete(linkInfo.url);
+                    this.githubHoverCardCachedAt.delete(linkInfo.url);
+                    return data;
+                }
                 this.githubHoverCardDataCache.set(linkInfo.url, data);
+                this.githubHoverCardCachedAt.set(linkInfo.url, Date.now());
                 this.trimGitHubHoverCardCache();
                 return data;
             })
@@ -1558,6 +1608,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                 // Drop the entry instead of caching the placeholder: a single offline or
                 // rate-limited hover would otherwise stand in for the real title all session.
                 this.githubHoverCardDataCache.delete(linkInfo.url);
+                this.githubHoverCardCachedAt.delete(linkInfo.url);
                 return this.createGitHubHoverCardFallbackData(linkInfo, reference);
             });
 
@@ -1565,16 +1616,22 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return promise;
     }
 
+    private isGitHubHoverCardEntryFresh(url: string): boolean {
+        const at = this.githubHoverCardCachedAt.get(url);
+        return at !== undefined && Date.now() - at < GITHUB_HOVER_CARD_CACHE_TTL_MS;
+    }
+
     private trimGitHubHoverCardCache() {
         for (const url of this.githubHoverCardDataCache.keys()) {
             if (this.githubHoverCardDataCache.size <= GITHUB_HOVER_CARD_CACHE_LIMIT) break;
             this.githubHoverCardDataCache.delete(url);
+            this.githubHoverCardCachedAt.delete(url);
         }
     }
 
     private getCachedGitHubHoverCardData(url: string): GitHubHoverCardData | null {
         const cached = this.githubHoverCardDataCache.get(url);
-        if (!cached || 'then' in cached) return null;
+        if (!cached || 'then' in cached || !this.isGitHubHoverCardEntryFresh(url)) return null;
 
         return cached;
     }
@@ -2440,13 +2497,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const doc = active.doc;
         const previous = doc.activeElement;
         if (previous instanceof HTMLElement) active.returnFocusTo = previous;
+        // The popup itself, not a control inside it: the first enabled button is the pin,
+        // where a stray Space flips a setting for every preview, and parking focus in the
+        // address bar freezes it, swallows the first Escape, and makes the background
+        // refresh cancel itself every time. Tab from here reaches the toolbar.
         active.element.tabIndex = -1;
         active.element.focus({ preventScroll: true });
-        // The address bar is the safe landing spot: the first enabled button is the pin,
-        // where a stray Space would flip a setting for every preview.
-        const target = active.element.querySelector<HTMLElement>('.preview-address-input')
-            ?? active.element.querySelector<HTMLElement>('.preview-buttons button:not(:disabled)');
-        target?.focus({ preventScroll: true });
     }
 
     private openPreviewForLink(linkInfo: LinkInfo) {
@@ -2508,9 +2564,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.navigatePreviewFrame(panel.controller, url);
             panel.url = url;
             panel.requestUrl = url;
-            // `bindPreviewFrame` only stamps this on the first reveal, so clearing it here
-            // would leave the panel's frame without one for the rest of its life.
-            panel.controller.resolvedUrl = url;
+            // `bindPreviewFrame` only stamps this on a first reveal, so the frame has to be
+            // told that this navigation is one; otherwise it keeps the very first page's URL.
+            panel.controller.resolvedUrl = undefined;
+            panel.controller.resetResolved?.();
         }
         panel.dock?.updateBounds();
     }
@@ -3069,6 +3126,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.applyPreviewViewportProps(previewEl, controller.currentUrl);
         };
         controller.startLoading = startLoading;
+        // Retargeting the panel is a fresh load: without this the frame would keep the URL
+        // its very first page settled on, and could never be reused for the new link.
+        controller.resetResolved = () => { hasRevealedInitialPage = false; };
 
         if (this.isPreviewWebview(frame)) {
             frame.addEventListener('dom-ready', () => {
@@ -3093,10 +3153,20 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
                         document.addEventListener('click', (event) => {
                             if (event.defaultPrevented || event.button !== 0) return;
                             if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                            const target = event.target;
-                            if (!(target instanceof Element)) return;
-                            const anchor = target.closest('a[target=_blank], a[target=_new]');
-                            if (!(anchor instanceof HTMLAnchorElement)) return;
+                            // composedPath reaches into an open shadow root, which
+                            // event.target does not: it reports the host instead.
+                            const path = event.composedPath ? event.composedPath() : [event.target];
+                            let anchor = null;
+                            for (const node of path) {
+                                if (node instanceof HTMLAnchorElement) { anchor = node; break; }
+                            }
+                            if (!anchor) return;
+                            const rel = (anchor.target || '').toLowerCase();
+                            if (rel !== '_blank' && rel !== '_new') return;
+                            // A download anchor's click saves a file; preventing it would
+                            // navigate to the file instead. Clicking a link inside an editor
+                            // places the caret and must not move the page.
+                            if (anchor.hasAttribute('download') || anchor.isContentEditable) return;
                             const href = anchor.href;
                             if (!/^https?:/i.test(href)) return;
                             event.preventDefault();
@@ -4952,7 +5022,11 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return text
             .replace(/\\/g, '\\\\')
             .replace(/\[/g, '\\[')
-            .replace(/\]/g, '\\]');
+            .replace(/\]/g, '\\]')
+            // Obsidian renders inline HTML, so an issue titled `<Select> loses focus` would
+            // vanish from the note — and `<input type="date">` would render a real widget.
+            .replace(/</g, '\\<')
+            .replace(/>/g, '\\>');
     }
 
     private formatMarkdownDestination(url: string): string {

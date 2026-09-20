@@ -122,9 +122,10 @@ body.url-preview-hide-loading-indicators .preview-iframe-wrapper .preview-frame 
     justify-content: flex-end;
     gap: 2px;
     z-index: 3;
-    /* The 8px resize bands run down the popup's left and right edges and hit-test above
-       this toolbar, so the controls are inset past them horizontally; otherwise the close
-       button's corner started a diagonal resize instead of closing the preview. */
+    /* The 8px corner handles sit at the popup's top corners and hit-test above this
+       toolbar, so the controls are inset past them horizontally; otherwise the close
+       button's corner started a diagonal resize instead of closing the preview. Measured:
+       reverting this to 4px brings the dead corner straight back. */
     padding: 4px 8px;
     background: var(--background-primary);
     border-bottom: 1px solid var(--background-modifier-border);
