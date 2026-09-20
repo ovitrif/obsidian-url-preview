@@ -43,8 +43,8 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 - **Show loading indicators**: show the initial loading overlay and the spinners (off by default); turning it off also drops the content-area background override
 - **Show preview button on link hover**: show the eye button beside hovered links (off on new installs)
 - **Show external-link icon**: keep Obsidian's external-link glyph beside links
-- **Show GitHub hover cards**: show a card with the title and state when hovering a GitHub issue or pull request
-- **Show GitHub pull request numbers**: show `#123` beside GitHub pull request links
+- **Show GitHub hover cards**: show a card with the title and state when hovering a GitHub issue or pull request with your modifier keys held
+- **Show GitHub issue and PR numbers**: show `#123` beside GitHub issue and pull request links
 - **Maximum height / width**: maximum size of the preview window, in pixels
 - **Allow resize**: drag the preview's edges and corners to resize it
 - **Persist resize**: reuse the resized dimensions for later previews, with a reset button
@@ -57,17 +57,19 @@ URLs written inside inline code or a fenced code block are left alone: they get 
 
 Use **Open in right-side panel** in the toolbar to place the preview beside your note without creating a workspace split or tab. Further preview links reuse that panel; Back and Forward follow both links opened from notes and navigation within the website. Closing the panel restores the note's full width. Closing a preview keeps its loaded page in memory. On reopening, the cached page appears immediately while a fresh copy loads behind it. The replacement preserves page scrolling; failed refreshes and active edits keep the existing page. Refreshes are triggered only by reopening a closed preview. A cached page is silenced while it is out of sight, and is dropped five minutes after you close it, when a sixth page pushes it out, or when the plugin unloads.
 
-In Live Preview or source mode, right-click an external URL, a scheme-less `github.com/...` URL, or a short GitHub reference such as `owner/repo#123`, then choose **Convert URL to Markdown link** to replace it with `[page title](url)`. For GitHub pull request and issue links, the menu also includes **Add repo name prefix**, **Copy PR ID**, and **Copy agent session title**.
+The side-panel toolbar button switches back to a floating preview without reloading. Drag the divider to resize the note and preview; its position is remembered. The divider highlights in the accent color on hover and while dragging, and supports Left/Right arrow keys when focused.
+
+In Live Preview or source mode, right-click an external URL, a scheme-less `github.com/...` URL, or a short GitHub reference such as `owner/repo#123`, then choose **Convert URL to Markdown link** to replace it with `[page title](url)`. For GitHub pull request and issue links, the menu also includes **Add repo name prefix**, **Copy issue or PR ID**, and **Copy agent session title**.
 
 ## Authentication
 
 On desktop, previews use Obsidian's persistent embedded browser session when available, so login state can be reused by later previews. Use the website's own sign-in and sign-out controls.
 
-The side-panel toolbar button switches back to a floating preview without reloading. Drag the divider to resize the note and preview; its position is remembered. The divider highlights in the accent color on hover and while dragging, and supports Left/Right arrow keys when focused.
-
 ## Limitations
 
-Some websites block iframe embedding and cannot be previewed. This is a browser security restriction that cannot be bypassed.
+On desktop the preview is an embedded browser view, so a site's framing rules do not apply and most pages load.
+
+Where that embedded view is unavailable — on mobile, or in a host without it — the preview falls back to an `iframe`. There, a site that blocks framing cannot be previewed, a blocked page stays blank with no message, and Back and Forward only follow links opened from your notes, not navigation inside the page.
 
 ## Credits
 

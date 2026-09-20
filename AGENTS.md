@@ -4,7 +4,7 @@ This file provides guidance to AI agents like [Claude Code](https://claude.ai/co
 
 ## Project Overview
 
-This is an Obsidian plugin ("URL Preview") that displays a website preview when hovering over external links within Obsidian. It is built with TypeScript and uses `esbuild` for bundling.
+This is an Obsidian plugin ("URL Preview") that displays a website preview when an external link is clicked with the configured modifier keys held. It is built with TypeScript and uses `esbuild` for bundling.
 
 ## Build Commands
 

@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview, divider, hover card and toolbar tooltip now sit on Obsidian's own layers rather than fixed numbers, so Obsidian's popovers no longer cover a preview.
 - Badge decorations are built from a cached parse and only for the visible part of the note.
 
+### Removed
+
+- GitHub auth button from the preview toolbar; sign in and out using the website's own controls inside the preview.
+
 ### Fixed
 
 - Modifier-clicking an internal `[[wikilink]]` opened a blank preview instead of the note.

@@ -1,7 +1,7 @@
 {
 	"name": "obsidian-url-preview",
 	"version": "0.8.0",
-	"description": "Preview external URLs on hover. Works in Editor, Live Preview, and Reader modes.",
+	"description": "Preview external URLs with modifier+click. Works in Editor, Live Preview, and Reader modes.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

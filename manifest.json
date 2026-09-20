@@ -3,7 +3,7 @@
 	"name": "URL Preview",
 	"version": "0.8.0",
 	"minAppVersion": "1.11.0",
-	"description": "Preview external URLs on hover. Works in Editor, Live Preview, and Reader modes.",
+	"description": "Preview external URLs with modifier+click. Works in Editor, Live Preview, and Reader modes.",
 	"author": "ovitrif",
 	"authorUrl": "https://github.com/ovitrif",
 	"isDesktopOnly": false

@@ -140,6 +140,7 @@ interface CachedPreview {
     controller: PreviewFrameController;
     dock?: PreviewSidePanel;
     expiry?: number;
+    restoreBounds?: { left: number; top: number; width: number; height: number };
     floatingBounds?: { left: number; top: number; width: number; height: number };
     floatingAnchor?: HTMLElement;
     cancelRefresh?: () => void;
@@ -343,6 +344,7 @@ const GITHUB_HOVER_CARD_DELAY_MS = 250;
 const GITHUB_HOVER_CARD_GAP = 12;
 // Hovered GitHub references accumulate for the whole session otherwise.
 const GITHUB_HOVER_CARD_CACHE_LIMIT = 100;
+const TITLE_REQUEST_TIMEOUT_MS = 10000;
 const GITHUB_HOVER_CARD_HIDE_DELAY_MS = 300;
 const GITHUB_HOVER_CARD_MARGIN = 10;
 const GITHUB_HOVER_CARD_DESCRIPTION_MAX_LENGTH = 320;
@@ -2070,7 +2072,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         menu.addItem((item) => {
             item
-                .setTitle('Copy PR ID')
+                .setTitle('Copy issue or PR ID')
                 .setIcon('hash')
                 .onClick(() => {
                     void this.copyGitHubReference(githubReference);
@@ -2502,6 +2504,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.applyPreviewBounds(previewEl, this.calculatePreviewBounds(link.getBoundingClientRect(), {
                 width: win.innerWidth, height: win.innerHeight,
             }));
+            entry.restoreBounds = undefined;
+            this.updateExpandButton(previewEl, false);
         }
 
         // Add click-outside handler for sticky popup mode
@@ -2747,10 +2751,23 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             this.activateCachedPreview(entry, anchor, anchor, undefined, entry.floatingBounds);
             return;
         }
-        const note = this.app.workspace.getMostRecentLeaf();
+        if (!entry) return;
+        // The most recent leaf may live in another window; the panel has to dock in the one
+        // the preview is in, so prefer a leaf from that document before falling back.
+        let note = this.app.workspace.getMostRecentLeaf();
+        if (!note || note.view.containerEl.ownerDocument !== entry.doc) {
+            note = null;
+            this.app.workspace.iterateAllLeaves((candidate) => {
+                if (note || candidate.view.containerEl.ownerDocument !== entry.doc) return;
+                if (candidate.view.containerEl.querySelector(':scope > .view-content')) note = candidate;
+            });
+        }
         const host = note?.view.containerEl;
         const content = host?.querySelector<HTMLElement>(':scope > .view-content');
-        if (!entry || !host || !content || host.ownerDocument !== entry.doc) return;
+        if (!host || !content) {
+            new Notice('No note in this window can hold the side panel');
+            return;
+        }
         for (const other of this.previewCache.values()) {
             if (other.doc === entry.doc) other.dock?.close();
         }
@@ -2760,6 +2777,13 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.cleanupActivePreview();
         new PreviewSidePanel(entry, host, content, this);
         this.updateDockButton(container, true);
+    }
+
+    private updateExpandButton(container: HTMLElement, expanded: boolean) {
+        const button = container.querySelector<HTMLElement>('.preview-expand-button');
+        if (!button) return;
+        setIcon(button, expanded ? 'minimize-2' : 'maximize-2');
+        this.setToolbarTooltip(button, expanded ? 'Restore preview size' : 'Expand preview');
     }
 
     private updateDockButton(container: HTMLElement, docked: boolean) {
@@ -2846,7 +2870,14 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             if ('isMainFrame' in event && event.isMainFrame === false) return;
             if ('errorCode' in event && event.errorCode === -3) return;
             previewEl.removeClass('is-page-loading');
-            if (hasRevealedInitialPage) return;
+            if (hasRevealedInitialPage) {
+                // The previous page is still on screen, so an overlay would hide readable
+                // content; say what failed instead of leaving the user with a silent no-op.
+                const failedUrl = this.getPreviewNavigationEventUrl(event) ?? controller.currentUrl;
+                new Notice(`Could not load ${failedUrl}`);
+                this.updatePreviewNavigationControls(previewEl, controller);
+                return;
+            }
 
             failedSequence = loadSequence;
             loading.textContent = 'Failed to load preview';
@@ -3320,7 +3351,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private removeOrphanedPreviews() {
         for (const doc of this.handledDocuments) {
-            doc.querySelectorAll<HTMLElement>('.hover-popup:not(.is-refreshing)').forEach(el => {
+            // Only this plugin's popups carry data-preview-url; `hover-popup` alone is a
+            // generic name and removing every match would delete another plugin's element.
+            doc.querySelectorAll<HTMLElement>('.hover-popup[data-preview-url]:not(.is-refreshing)').forEach(el => {
                 if (!this.previewCache.has(el)) el.remove();
             });
         }
@@ -3488,28 +3521,29 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
 
         if (this.settings.allowResize) {
-            let restoreBounds: { left: number, top: number, width: number, height: number } | null = null;
             const resizeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-expand-button' });
             setIcon(resizeBtn, 'maximize-2');
             this.setToolbarTooltip(resizeBtn, 'Expand preview');
             resizeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
 
-                if (restoreBounds) {
-                    this.applyPreviewBounds(container, restoreBounds);
-                    restoreBounds = null;
-                    setIcon(resizeBtn, 'maximize-2');
-                    this.setToolbarTooltip(resizeBtn, 'Expand preview');
+                const entry = this.previewCache.get(container);
+                if (entry?.restoreBounds) {
+                    this.applyPreviewBounds(container, entry.restoreBounds);
+                    entry.restoreBounds = undefined;
+                    this.updateExpandButton(container, false);
                     return;
                 }
 
                 const rect = container.getBoundingClientRect();
-                restoreBounds = {
-                    left: rect.left,
-                    top: rect.top,
-                    width: rect.width,
-                    height: rect.height,
-                };
+                if (entry) {
+                    entry.restoreBounds = {
+                        left: rect.left,
+                        top: rect.top,
+                        width: rect.width,
+                        height: rect.height,
+                    };
+                }
                 this.applyPreviewBounds(container, this.calculateExpandedPreviewBounds(container.ownerDocument));
                 setIcon(resizeBtn, 'minimize-2');
                 this.setToolbarTooltip(resizeBtn, 'Restore preview size');
@@ -3632,6 +3666,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const forwardButton = previewEl.querySelector('.preview-navigation-forward');
         if (forwardButton instanceof HTMLButtonElement) {
             forwardButton.disabled = !this.canGoForwardInPreview(controller);
+        }
+
+        // Zoom is stored per domain, so navigating across domains changes the real zoom.
+        const zoomInput = previewEl.querySelector('.preview-zoom-input');
+        if (zoomInput instanceof HTMLInputElement && zoomInput.ownerDocument.activeElement !== zoomInput) {
+            zoomInput.value = String(this.getDomainZoomPercent(this.getPreviewFrameUrl(controller)));
         }
     }
 
@@ -4512,18 +4552,35 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         return title;
     }
 
+    // requestUrl has no timeout, and a server that accepts a connection and never answers
+    // leaves the "Fetching page title" notice up forever and pins the hover card's promise.
+    private withTitleRequestTimeout<T>(request: Promise<T>): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            const timer = window.setTimeout(
+                () => reject(new Error('Title request timed out')), TITLE_REQUEST_TIMEOUT_MS);
+            request.then(
+                (value) => { window.clearTimeout(timer); resolve(value); },
+                (error: unknown) => {
+                    window.clearTimeout(timer);
+                    reject(error instanceof Error ? error : new Error(String(error)));
+                },
+            );
+        });
+    }
+
     private async fetchPageHtml(url: string): Promise<string> {
         const headers = await this.getTitleRequestHeaders(url);
 
         try {
-            const response = await requestUrl({ url, headers, throw: false });
+            const response = await this.withTitleRequestTimeout(requestUrl({ url, headers, throw: false }));
             // An error page has a title of its own; using it would write "Page not found" into the note.
             if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
             return response.text;
         } catch (error) {
             if (!headers.Cookie) throw error instanceof Error ? error : new Error('Title request failed');
 
-            const response = await requestUrl({ url, headers: this.getTitleRequestBaseHeaders(), throw: false });
+            const response = await this.withTitleRequestTimeout(
+                requestUrl({ url, headers: this.getTitleRequestBaseHeaders(), throw: false }));
             if (response.status >= 400) throw new Error(`Title request failed with status ${response.status}`);
             return response.text;
         }
@@ -4805,8 +4862,8 @@ class LinkPreviewSettingTab extends PluginSettingTab {
 
         inlineGroup.addSetting(setting => {
             setting
-                .setName('Show GitHub pull request numbers')
-                .setDesc('Show #123 beside GitHub pull request links')
+                .setName('Show GitHub issue and PR numbers')
+                .setDesc('Show #123 beside GitHub issue and pull request links')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.showGitHubPullRequestIds)
                     .onChange(async (value) => {
