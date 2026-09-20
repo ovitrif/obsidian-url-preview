@@ -126,12 +126,18 @@ interface PreviewFrameController {
 // Neither pane is useful below this width, so the divider stops there.
 const SIDE_PANEL_MIN_WIDTH = 280;
 
+// A cached page keeps a whole renderer process alive, so it is only worth holding for as
+// long as the user is plausibly coming back to it.
+const PREVIEW_CACHE_LIMIT = 5;
+const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
+
 interface CachedPreview {
     url: string;
     doc: Document;
     element: HTMLElement;
     controller: PreviewFrameController;
     dock?: PreviewSidePanel;
+    expiry?: number;
     floatingBounds?: { left: number; top: number; width: number; height: number };
     floatingAnchor?: HTMLElement;
     cancelRefresh?: () => void;
@@ -153,6 +159,7 @@ class PreviewSidePanel {
         entry.element.addClass('is-docked');
         entry.element.removeClass('is-cached');
         plugin.setPreviewMuted(entry, false);
+        plugin.clearCacheExpiry(entry);
         this.divider = entry.doc.body.createDiv('url-preview-divider');
         this.divider.setAttr('role', 'separator');
         this.divider.setAttr('aria-label', 'Resize note and preview');
@@ -2372,6 +2379,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const { element: previewEl, doc } = entry;
         previewEl.removeClass('is-cached', 'is-refreshing', 'is-docked');
         this.setPreviewMuted(entry, false);
+        this.clearCacheExpiry(entry);
         const win = doc.defaultView ?? window;
         // A refreshed page already has its final viewport and restored scroll.
         // Resizing it again here can trigger the website's scroll anchoring.
@@ -2409,10 +2417,27 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             entry.url = this.getPreviewFrameUrl(entry.controller);
             previewEl.addClass('is-cached');
             this.setPreviewMuted(entry, true);
+            this.scheduleCacheExpiry(entry);
             void this.flushPreviewSessionStorage();
             this.activePreview = undefined;
         };
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
+    }
+
+    private scheduleCacheExpiry(entry: CachedPreview) {
+        this.clearCacheExpiry(entry);
+        const win = entry.doc.defaultView ?? window;
+        entry.expiry = win.setTimeout(() => {
+            entry.expiry = undefined;
+            if (entry.dock || entry.element === this.activePreview?.element) return;
+            this.disposeCachedPreview(entry);
+        }, PREVIEW_CACHE_TTL_MS);
+    }
+
+    clearCacheExpiry(entry: CachedPreview) {
+        if (entry.expiry === undefined) return;
+        (entry.doc.defaultView ?? window).clearTimeout(entry.expiry);
+        entry.expiry = undefined;
     }
 
     // A cached preview stays attached and keeps playing; silence it while it is out of sight.
@@ -2429,6 +2454,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     private disposeCachedPreview(entry: CachedPreview) {
         // Remove first so closing the panel cannot evict this entry recursively.
         this.previewCache.delete(entry.element);
+        this.clearCacheExpiry(entry);
         if (this.activePreview?.element === entry.element || entry.element.hasClass('is-resizing')) {
             this.activeResizeCleanup?.();
             this.activeResizeCleanup = undefined;
@@ -2442,7 +2468,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
     private trimPreviewCache() {
         for (const entry of this.previewCache.values()) {
-            if (this.previewCache.size <= 5) break;
+            if (this.previewCache.size <= PREVIEW_CACHE_LIMIT) break;
             if (entry.dock || entry.element === this.activePreview?.element) continue;
             this.disposeCachedPreview(entry);
         }
@@ -2572,6 +2598,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         entry.element.removeClass('is-docked');
         entry.element.addClass('is-cached');
         this.setPreviewMuted(entry, true);
+        this.scheduleCacheExpiry(entry);
         this.updateDockButton(entry.element, false);
         if (trim) this.trimPreviewCache();
     }
