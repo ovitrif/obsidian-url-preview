@@ -58,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resizing or expanding a preview while its page refreshed in the background was undone a moment later, and typing in the toolbar during that refresh lost what was typed.
 - Taking a sticky preview back out of the side panel left it impossible to dismiss by clicking in the note.
 - A GitHub pull request badge was copied along with the paragraph it sits in.
+- A `www.github.com` issue link in reading view made the plugin rescan the note continuously and never showed its badge.
+- The preview button beside a link stayed on the link the pointer had left, could not move between two links in the same paragraph, and survived scrolling and resizing.
+- A `target="_blank"` link inside a previewed page did nothing at all; the preview follows it now.
+- The close button's corner started a resize instead of closing the preview.
+- The side panel divider could not be moved at all in a note narrower than 560 px.
+- The second GitHub reference in a sentence could never be hovered, and the card stayed pinned over unrelated text after scrolling.
+- An issue title containing `<` disappeared from the note when the link was converted.
+- Clicking a link after browsing elsewhere inside its preview reopened the page you had browsed to, and a link that redirects opened a second preview every time.
+- Escape in the zoom box committed the typed value instead of reverting it.
+- Releasing a resize drag past the window edge closed the preview, and restoring an expanded preview after shrinking the window put it off screen.
+- A preview refreshed in the background handed focus back to the note while staying open.
 
 ## [0.8.0] - 2026-09-08
 
