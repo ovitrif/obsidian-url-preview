@@ -803,7 +803,9 @@ export default class LinkPreviewPlugin extends Plugin {
                     this.editorEscapeArmed = false;
                     return;
                 }
-                if (e.defaultPrevented || e.repeat) return;
+                // The shortcut inside a previewed page filters these too; without it
+                // Shift+Escape and friends closed the preview while nothing else reacted.
+                if (e.defaultPrevented || e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
                 const focused = doc.activeElement;
                 // The toolbar's address, size and zoom fields implement Escape themselves
                 // (revert and blur). Capture phase runs before their own listeners and is
@@ -2785,6 +2787,9 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             void this.flushPreviewSessionStorage();
             this.activePreview = undefined;
         };
+        // A pairing armed against the previous preview must not close this one on its
+        // first Escape — the eye button swaps previews without ever touching focus.
+        this.editorEscapeArmed = false;
         this.activePreview = { element: previewEl, cleanup: cleanupWithClickHandler, doc, link: hoverElement, sourceKey };
     }
 
@@ -4883,10 +4888,18 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     // lookup was itself unbounded, and it ran for every `[` in the note — so a long run
     // without a blank line, which is what a checkbox list or a table is, was quadratic all
     // over again: an 82 KB list of tasks cost 20 ms per keystroke and a 166 KB one 52 ms.
-    // `\n\n`, and the `\r\n\r\n` a Windows-authored or autocrlf note carries.
+    // A blank line is one that holds nothing but spaces and tabs, which is what Obsidian
+    // renders as a paragraph break. Accepting only `\n\n` left the break invisible to the
+    // scan whenever the line carried a stray space, and the link range spanned it again.
+    // `\r` is skipped here too, for the `\r\n\r\n` a Windows-authored note carries.
     private startsBlankLine(content: string, index: number): boolean {
         if (content[index] !== '\n') return false;
-        const next = content[index + 1] === '\r' ? index + 2 : index + 1;
+        let next = index + 1;
+        while (next < content.length) {
+            const char = content[next];
+            if (char !== ' ' && char !== '\t' && char !== '\r') break;
+            next++;
+        }
         return content[next] === '\n';
     }
 
