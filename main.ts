@@ -499,6 +499,7 @@ export default class LinkPreviewPlugin extends Plugin {
     private githubHoverCardDataCache = new Map<string, GitHubHoverCardData | Promise<GitHubHoverCardData>>();
     private previewCache = new Map<HTMLElement, CachedPreview>();
     private lastPreviewChromeSignature: string | undefined;
+    private editorLinkCache?: { doc: unknown; links: ParsedMarkdownLink[] };
 
     async onload() {
         await this.loadSettings();
@@ -600,8 +601,21 @@ export default class LinkPreviewPlugin extends Plugin {
         return insideCode;
     }
 
+    // Decorations rebuild on every scroll tick, so re-parsing the whole note each time is the
+    // single most expensive thing this plugin does on a long note. The document is immutable,
+    // so its identity is a safe cache key.
+    private parseEditorLinksForDocument(view: EditorView): ParsedMarkdownLink[] {
+        const doc = view.state.doc;
+        if (this.editorLinkCache?.doc === doc) return this.editorLinkCache.links;
+        const links = this.parseEditorLinks(doc.toString());
+        this.editorLinkCache = { doc, links };
+        return links;
+    }
+
     private buildGitHubPullRequestBadgeDecorations(view: EditorView): DecorationSet {
-        const links = this.parseEditorLinks(view.state.doc.toString())
+        const visible = view.visibleRanges;
+        const links = this.parseEditorLinksForDocument(view)
+            .filter((link) => visible.some((range) => link.start <= range.to && link.end >= range.from))
             .filter((link) => !this.isRangeInsideCode(view, link.start, link.end));
 
         return Decoration.set(
