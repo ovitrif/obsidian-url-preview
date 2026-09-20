@@ -523,6 +523,9 @@ export default class LinkPreviewPlugin extends Plugin {
     private previewRequest = 0;
     private unloaded = false;
     private editorLinkCache = new WeakMap<EditorView, { doc: unknown; links: ParsedMarkdownLink[] }>();
+    private editorContentCache = new WeakMap<EditorView, { doc: unknown; content: string }>();
+    private markdownLinkMemo?: { content: string; links: ParsedMarkdownLink[] };
+    private bareUrlMemo?: { content: string; links: ParsedMarkdownLink[] };
 
     async onload() {
         await this.loadSettings();
@@ -639,6 +642,31 @@ export default class LinkPreviewPlugin extends Plugin {
     // Decorations rebuild on every scroll tick, so re-parsing the whole note each time is the
     // single most expensive thing this plugin does on a long note. The document is immutable,
     // so its identity is a safe cache key.
+    // Hover resolution runs on every mouse move, and each pass used to re-stringify and
+    // re-scan the whole note. The document is immutable, so one parse per version is enough.
+    private editorContentForDocument(view: EditorView): string {
+        const doc = view.state.doc;
+        const cached = this.editorContentCache.get(view);
+        if (cached?.doc === doc) return cached.content;
+        const content = doc.toString();
+        this.editorContentCache.set(view, { doc, content });
+        return content;
+    }
+
+    private parseMarkdownLinksCached(content: string): ParsedMarkdownLink[] {
+        if (this.markdownLinkMemo?.content !== content) {
+            this.markdownLinkMemo = { content, links: this.parseMarkdownLinks(content) };
+        }
+        return this.markdownLinkMemo.links;
+    }
+
+    private parseBareMarkdownUrlsCached(content: string): ParsedMarkdownLink[] {
+        if (this.bareUrlMemo?.content !== content) {
+            this.bareUrlMemo = { content, links: this.parseBareMarkdownUrls(content) };
+        }
+        return this.bareUrlMemo.links;
+    }
+
     private parseEditorLinksForDocument(view: EditorView): ParsedMarkdownLink[] {
         const doc = view.state.doc;
         const cached = this.editorLinkCache.get(view);
@@ -3348,6 +3376,16 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         if (!requireFn) return null;
 
         try {
+            // `session` is a main-process module: the renderer's own `electron` export does not
+            // carry it, so this has to go through the remote bridge like every other main-process
+            // object here. Reading it from `electron` silently disabled the whole cookie path.
+            const remote = requireFn('@electron/remote') as ElectronModule;
+            if (remote?.session?.defaultSession) return remote.session.defaultSession;
+        } catch {
+            // Fall through to the renderer module on hosts without the remote bridge.
+        }
+
+        try {
             const electron = requireFn('electron') as ElectronModule;
             return electron.session?.defaultSession ?? null;
         } catch {
@@ -4115,7 +4153,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const linkTarget = this.getEditorLinkTargetElement(target);
         if (!linkTarget) return null;
 
-        const content = editorView.state.doc.toString();
+        const content = this.editorContentForDocument(editorView);
         const pointLink = point ? this.getMarkdownLinkAtPoint(editorView, content, point) : null;
 
         if (pointLink) {
@@ -4163,7 +4201,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             Math.max(0, offset - 1),
             Math.min(content.length, offset + 1),
         ];
-        const links = this.parseMarkdownLinks(content);
+        const links = this.parseMarkdownLinksCached(content);
 
         for (const nearbyOffset of nearbyOffsets) {
             const link = this.findParsedMarkdownLinkAtOffset(links, nearbyOffset);
@@ -4182,7 +4220,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         const displayText = element.textContent?.trim();
         if (!displayText) return null;
 
-        for (const link of this.parseMarkdownLinks(content)) {
+        for (const link of this.parseMarkdownLinksCached(content)) {
             if (link.text.trim() === displayText) {
                 return link;
             }
@@ -4250,7 +4288,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private parseEditorLinks(content: string): ParsedMarkdownLink[] {
-        const markdownLinks = this.parseMarkdownLinks(content);
+        const markdownLinks = this.parseMarkdownLinksCached(content);
         return [
             ...markdownLinks,
             ...this.parseBareMarkdownUrls(content, markdownLinks),
@@ -4385,7 +4423,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private getBareMarkdownUrlAtOffset(content: string, offset: number): ParsedMarkdownLink | null {
-        for (const link of this.parseBareMarkdownUrls(content)) {
+        for (const link of this.parseBareMarkdownUrlsCached(content)) {
             const { end, start } = link;
             if (offset < start || offset > end) continue;
 
