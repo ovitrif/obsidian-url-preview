@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preview, divider, hover card and toolbar tooltip now sit on Obsidian's own layers rather than fixed numbers, so Obsidian's popovers no longer cover a preview.
 - Badge decorations are built from a cached parse and only for the visible part of the note.
 - The embedded skeleton font is subset to the two characters it draws, taking `styles.css` from 82 KB to 26 KB.
-- Escape closes a docked side panel when the panel, its divider or nothing holds focus, and leaves the key to the toolbar's own fields and to the note.
+- Escape closes a docked side panel when the panel, its divider or nothing holds focus — including right after docking with the toolbar button — and leaves the key to the toolbar's own fields and to the note.
+- **Preview link at cursor** moves focus into the preview and gives it back to the editor when the preview closes.
+- A preview is found again by the URL the link asked for as well as by the page it ended up on, so a link that redirects reuses its preview instead of opening a second one.
 - Page-title requests stay anonymous and time out after ten seconds.
 - "Copy PR ID" is now "Copy issue or PR ID", and the pull-request setting names issues too, since both were always handled.
 
@@ -47,6 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A reopened preview came back labelled "Restore preview size" at its normal size, and the zoom box kept the previous domain's number.
 - The preview toolbar, the inline buttons and the size and zoom inputs had no visible keyboard focus ring, hidden inline controls stayed in the tab order, and the spinners ignored the reduced-motion setting.
 - The side panel squeezed the note's view header, the popup's shadow and edge were unreadable in light themes, and generic class names styled or removed other plugins' elements.
+- A page that handed off to a mail client or an app scheme while it was still loading was hidden behind "Failed to load preview".
+- The right-click menu offered to convert a URL inside a fenced block or inline code, silently rewriting a command in a code sample.
+- Converting an image embed's URL broke the embed; link reference definitions and raw HTML `href`/`src` values were treated as links too.
+- A bare `gist.github.com/…` or `docs.github.com/…` previewed `github.com/…`, a different page than the note names.
+- `[[note#3]]` was given a GitHub issue badge and previewed as a GitHub issue instead of opening the note, and a URL in a note's frontmatter was treated as a link.
+- A URL wrapped in `**`, backticks or `~~` carried the closing markers into the address.
+- Resizing or expanding a preview while its page refreshed in the background was undone a moment later, and typing in the toolbar during that refresh lost what was typed.
+- Taking a sticky preview back out of the side panel left it impossible to dismiss by clicking in the note.
+- A GitHub pull request badge was copied along with the paragraph it sits in.
 
 ## [0.8.0] - 2026-09-08
 
