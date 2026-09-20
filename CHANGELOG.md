@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cached previews are silenced while they are out of sight and released five minutes after they are closed.
 - Preview, divider, hover card and toolbar tooltip now sit on Obsidian's own layers rather than fixed numbers, so Obsidian's popovers no longer cover a preview.
 - Badge decorations are built from a cached parse and only for the visible part of the note.
+- The embedded skeleton font is subset to the two characters it draws, taking `styles.css` from 82 KB to 26 KB.
+- Escape closes a docked side panel when the panel, its divider or nothing holds focus, and leaves the key to the toolbar's own fields and to the note.
+- Page-title requests stay anonymous and time out after ten seconds.
+- "Copy PR ID" is now "Copy issue or PR ID", and the pull-request setting names issues too, since both were always handled.
 
 ### Removed
 
@@ -23,17 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Modifier-clicking an internal `[[wikilink]]` opened a blank preview instead of the note.
+- Modifier-clicking an internal `[[wikilink]]` opened a blank preview instead of the note, in every mode.
+- A note containing both `[[Design]]` and `[Design](…)` previewed the external link when the wikilink was clicked.
 - URLs written inside inline code or a fenced code block were given previews and GitHub badges.
+- A note in reading view containing a GitHub pull request link rescanned the whole document every frame, for as long as it stayed open.
+- Resolving the link under the pointer re-parsed the whole note, several times per mouse move.
 - A closed preview of a page playing audio kept playing it from an invisible element.
+- A link conversion could land in whichever note the editor was showing when the title arrived, or be silently dropped while reporting success.
 - A bare URL ending in a parenthesis, such as a Wikipedia disambiguation link, was truncated, including when converting it to a Markdown link.
 - Converting a link whose page returned an HTTP error wrote the error page's title into the note.
-- The side panel swallowed every preview in its window while it was hidden in a background tab, and lost unsaved input when it was retargeted.
-- Returning to a floating preview restored the side panel's geometry instead of the preview's own.
-- A half-typed value in Maximum height or Maximum width was written to disk and could leave previews unopenable.
+- "Copy agent session title" could copy the note's own link text as though it were the page's title.
+- The side panel swallowed every preview in its window while it was hidden in a background tab, lost unsaved input when it was retargeted, and returned the panel's geometry instead of the preview's own.
+- A half-typed value in Maximum height or Maximum width was written to disk and could leave previews unopenable; a value below the minimum is now clamped rather than discarded.
+- Settings written in quick succession could overwrite each other.
 - Holding an arrow key on the side-panel divider wrote settings on every repeat.
 - A popout window's handlers were never released when it closed.
-- The preview toolbar and inline buttons had no visible keyboard focus ring, and the spinners ignored the reduced-motion setting.
+- A navigation that failed after the first page said nothing at all.
+- "Open in right-side panel" did nothing when the most recent note was in another window.
+- A reopened preview came back labelled "Restore preview size" at its normal size, and the zoom box kept the previous domain's number.
+- The preview toolbar, the inline buttons and the size and zoom inputs had no visible keyboard focus ring, hidden inline controls stayed in the tab order, and the spinners ignored the reduced-motion setting.
+- The side panel squeezed the note's view header, the popup's shadow and edge were unreadable in light themes, and generic class names styled or removed other plugins' elements.
 
 ## [0.8.0] - 2026-09-08
 
