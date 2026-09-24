@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The side panel docks beside a Kanban board as well as beside a note, and beside the note or board the preview was opened from.
 - Cached previews are silenced while they are out of sight and released five minutes after they are closed.
 - Preview, divider, hover card and toolbar tooltip now sit on Obsidian's own layers rather than fixed numbers, so Obsidian's popovers no longer cover a preview.
 - Badge decorations are built from a cached parse and only for the visible part of the note.

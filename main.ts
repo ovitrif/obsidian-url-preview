@@ -18,6 +18,7 @@ import {
     Plugin,
     PluginSettingTab,
     SettingGroup,
+    WorkspaceLeaf,
     normalizePath,
     requestUrl,
     setIcon,
@@ -3042,24 +3043,33 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             return;
         }
         if (!entry) return;
-        // The most recent leaf may live in another window; the panel has to dock in the one
-        // the preview is in, so prefer a leaf from that document before falling back.
-        let note = this.app.workspace.getMostRecentLeaf();
-        // The most recent leaf can be a canvas, a PDF or a board; only a note can give up
-        // half its width to the panel.
-        if (!note || !(note.view instanceof MarkdownView) || note.view.containerEl.ownerDocument !== entry.doc) {
-            note = null;
+        // Any leaf has a .view-content, including the file explorer, a canvas and a PDF;
+        // only a note or a Kanban board can give up half its width to the panel. The leaf
+        // also has to be in the window the preview is in.
+        const fits = (leaf: WorkspaceLeaf | null): leaf is WorkspaceLeaf => !!leaf &&
+            leaf.view.containerEl.ownerDocument === entry.doc &&
+            (leaf.view instanceof MarkdownView || leaf.view.getViewType() === 'kanban');
+        // Beside the note or board the link was opened from, then the most recent one.
+        const anchor = this.activePreview?.element === container ? this.activePreview.link : undefined;
+        let note: WorkspaceLeaf | null = null;
+        if (anchor) {
             this.app.workspace.iterateAllLeaves((candidate) => {
-                if (note || candidate.view.containerEl.ownerDocument !== entry.doc) return;
-                // Any leaf has a .view-content, including the file explorer and a canvas;
-                // only a note can give up half its width to the panel.
-                if (candidate.view instanceof MarkdownView) note = candidate;
+                if (!note && fits(candidate) && candidate.view.containerEl.contains(anchor)) note = candidate;
+            });
+        }
+        if (!note) {
+            const recent = this.app.workspace.getMostRecentLeaf();
+            if (fits(recent)) note = recent;
+        }
+        if (!note) {
+            this.app.workspace.iterateAllLeaves((candidate) => {
+                if (!note && fits(candidate)) note = candidate;
             });
         }
         const host = note?.view.containerEl;
         const content = host?.querySelector<HTMLElement>(':scope > .view-content');
         if (!host || !content) {
-            new Notice('No note in this window can hold the side panel');
+            new Notice('No note or board in this window can hold the side panel');
             return;
         }
         for (const other of this.previewCache.values()) {

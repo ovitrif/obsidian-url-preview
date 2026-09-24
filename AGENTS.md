@@ -51,6 +51,8 @@ The main plugin class handles the lifecycle and core logic:
 - **`showFloatingPreview`**:
   - Reuses a cached entry for the same document and URL, or builds one with `createCachedPreview`.
   - Positions it with `calculatePreviewBounds` and loads the URL in a `webview` (an `iframe` where `webview` is unavailable).
+- **`dockPreview(container)`**:
+  - Docks the preview as a `PreviewSidePanel` in a Markdown note or a Kanban board (view type `kanban`) in the preview's window: the one holding the preview's link, else the most recent, else any.
 
 #### LinkPreviewSettingTab
 
