@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Command **Preview link at cursor**, so a preview can be opened from the keyboard or on a touch device.
+- An API for other plugins: `app.plugins.plugins['url-preview'].api.open(url, { anchor, side })` opens a preview of `url` beside `anchor`, or straight in the side panel with `side: true`.
 
 ### Changed
 

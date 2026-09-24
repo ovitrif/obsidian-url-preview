@@ -512,8 +512,21 @@ const DEFAULT_SETTINGS: Readonly<Omit<LinkPreviewSettings, 'modifierKeys' | 'per
     // modifierKeys default is set dynamically in loadSettings() based on platform
 };
 
+/** What another plugin can call, as `app.plugins.plugins['url-preview'].api`. */
+export interface UrlPreviewApi {
+    /**
+     * Previews an http(s) URL as a modifier+click on a link at `anchor` would: floating beside
+     * it, or in the side panel when one is already open beside the anchor. `side` docks it in
+     * the side panel straight away. False when the URL is not one a preview can show.
+     */
+    open(url: string, options: { anchor: HTMLElement; side?: boolean }): boolean;
+}
+
 export default class LinkPreviewPlugin extends Plugin {
     settings: LinkPreviewSettings;
+    readonly api: UrlPreviewApi = {
+        open: (url, options) => this.openPreviewForUrl(url, options.anchor, options.side === true),
+    };
     private activePreview?: {
         element: HTMLElement,
         cleanup: () => void,
@@ -2590,6 +2603,18 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
 
         const { element: linkElement, hoverElement, sourceKey, url } = linkInfo;
         this.showPreview(linkElement, url, hoverElement, sourceKey);
+    }
+
+    private openPreviewForUrl(url: string, anchor: HTMLElement, side: boolean): boolean {
+        const normalized = this.normalizeUrl(url);
+        if (this.unloaded || !normalized || !anchor.isConnected) return false;
+        // The URL stands in for a note link's position: one anchor can open several URLs, and
+        // without a key each would match the preview already open on it and open nothing.
+        this.openPreviewForLink({ element: anchor, hoverElement: anchor, sourceKey: `api:${normalized}`, url: normalized });
+        // A panel already open beside the anchor has taken the URL, and leaves nothing active.
+        const active = this.activePreview;
+        if (side && active && !this.previewCache.get(active.element)?.dock) this.dockPreview(active.element);
+        return true;
     }
 
     private showPreview(link: HTMLElement, url: string, hoverElement: HTMLElement, sourceKey?: string) {

@@ -61,6 +61,18 @@ The panel docks beside the note or [Kanban](https://github.com/mgmeyers/obsidian
 
 In Live Preview or source mode, right-click an external URL, a scheme-less `github.com/...` URL, or a short GitHub reference such as `owner/repo#123`, then choose **Convert URL to Markdown link** to replace it with `[page title](url)`. For GitHub pull request and issue links, the menu also includes **Add repo name prefix**, **Copy issue or PR ID**, and **Copy agent session title**.
 
+## API
+
+Other plugins can open a preview through `app.plugins.plugins['url-preview'].api`, present while URL Preview is enabled:
+
+```ts
+api.open(url: string, options: { anchor: HTMLElement; side?: boolean }): boolean
+```
+
+- `anchor` is the element the preview opens beside, as if a link there had been modifier-clicked. When the side panel is already open beside it, the panel shows the URL.
+- `side: true` opens the preview in the side panel straight away.
+- It returns `false`, and opens nothing, for a URL that is not `http` or `https`.
+
 ## Authentication
 
 On desktop, previews use Obsidian's persistent embedded browser session when available, so login state can be reused by later previews. Use the website's own sign-in and sign-out controls.

@@ -45,6 +45,8 @@ The main plugin class handles the lifecycle and core logic:
   - Handles modifier keys (CMD/CTRL) to toggle specific behaviors during editing.
 - **`handleLinkClick(event)`**:
   - Previews open on modifier+click, not on hover. Resolves the clicked element with `findLinkElement` and defers to Obsidian when it resolves nothing.
+- **`api.open(url, { anchor, side? })`**:
+  - The public entry point for other plugins (documented in README). Opens through `openPreviewForLink` with `anchor` as the link and `api:<url>` as its source key, so one anchor can open several URLs; `side` then docks the preview.
 - **`showPreview(link, url, hoverElement, sourceKey?)`**:
   - Reuses a visible side panel that owns the link, otherwise opens a floating preview.
   - Each call takes a request token; anything that resumes after an `await` drops out when a newer click has started.
