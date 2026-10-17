@@ -582,18 +582,25 @@ body.url-preview-hide-external-link-icon .external-link {
 .preview-zoom-input-wrap {
     display: flex;
     align-items: center;
-    width: 54px;
-    min-width: 54px;
-    height: var(--input-height);
-    padding: 0 6px 0 4px;
+    height: calc(var(--input-height) - 6px);
+    margin: 0 2px;
+    padding: 0 5px;
+    border-radius: var(--radius-s);
     background-color: transparent;
 }
 
+/* The field is as wide as its number, so the focus shape is the label's own: "80%", not a box beside it. */
+.preview-zoom-input-wrap:hover,
+.preview-zoom-input-wrap:focus-within {
+    background-color: var(--background-modifier-hover);
+}
+
 .preview-zoom-controls .preview-zoom-input {
-    flex: 1 1 auto;
-    width: 32px;
-    min-width: 0;
-    height: var(--input-height);
+    flex: 0 0 auto;
+    field-sizing: content;
+    width: auto;
+    min-width: 1ch;
+    height: 100%;
     margin: 0;
     padding: 0;
     border: none;
@@ -626,10 +633,16 @@ body.url-preview-hide-external-link-icon .external-link {
 
 /* These two are the keyboard replacement for the mouse-only resize handles, so a keyboard
    user has to be able to see where they are. */
-.hover-popup .preview-size-controls input.preview-size-input:focus-visible,
-.preview-zoom-controls .preview-zoom-input:focus-visible {
+.hover-popup .preview-size-controls input.preview-size-input:focus-visible {
     outline: 2px solid var(--interactive-accent);
     outline-offset: -2px;
+}
+
+/* Its own box never shows: the label's rounded highlight above is the field's hover and focus shape. */
+.preview-zoom-controls .preview-zoom-input:is(:hover, :focus, :focus-visible) {
+    background-color: transparent;
+    box-shadow: none;
+    outline: none;
 }
 
 .preview-zoom-controls .preview-zoom-input::-webkit-inner-spin-button,
@@ -891,7 +904,14 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
     overflow: auto;
 }
 
+/* The text starts where the title does (the toolbar's 8px and the title's 8px), at any zoom: the frame is scaled. */
 .url-preview-note-panel .url-preview-note-body {
-    padding: var(--file-margins, 16px 24px);
+    padding: calc(12px / var(--preview-frame-scale, 1)) calc(16px / var(--preview-frame-scale, 1)) calc(32px / var(--preview-frame-scale, 1));
     user-select: text;
+}
+
+/* The note panel's toolbar shows only Close until the pointer is over it, like Arc's view header zoom (Ovi, 17 Oct).
+   Hidden, they take no room, so a narrow panel keeps the whole title. */
+.url-preview-note-panel .preview-buttons:not(:hover, :focus-within) > :not(.preview-note-title, .preview-close-button) {
+    display: none;
 }
