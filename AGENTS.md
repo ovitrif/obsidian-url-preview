@@ -47,6 +47,8 @@ The main plugin class handles the lifecycle and core logic:
   - Previews open on modifier+click, not on hover. Resolves the clicked element with `findLinkElement` and defers to Obsidian when it resolves nothing.
 - **`api.open(url, { anchor, side? })`**:
   - The public entry point for other plugins (documented in README). Opens through `openPreviewForLink` with `anchor` as the link and `api:<url>` as its source key, so one anchor can open several URLs; `side` then docks the preview.
+- **`api.openNote(path, { anchor })`**:
+  - Opens `NoteSidePanel`, which shares `DockedSidePanel` (divider, ratio, resize, close) with `PreviewSidePanel`. One side panel per window: `dockPreview` closes note panels, and `openNoteForPath` closes URL docks. Zoom is kept under the `NOTE_ZOOM_URL` key, one level for all notes.
 - **`showPreview(link, url, hoverElement, sourceKey?)`**:
   - Reuses a visible side panel that owns the link, otherwise opens a floating preview.
   - Each call takes a request token; anything that resumes after an `await` drops out when a newer click has started.

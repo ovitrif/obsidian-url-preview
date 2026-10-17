@@ -11,6 +11,7 @@ import {
     Component,
     Editor,
     TFile,
+    MarkdownRenderer,
     MarkdownView,
     Menu,
     Notice,
@@ -156,7 +157,12 @@ interface CachedPreview {
     cancelRefresh?: () => void;
 }
 
-class PreviewSidePanel {
+/**
+ * A panel docked beside a note or a Kanban board, taking the right part of its page: the divider between them, its
+ * drag and arrow keys, the width ratio kept in the settings, and the page narrowed to make room. The URL preview's panel
+ * and the note panel are both one, so they dock, resize and look the same.
+ */
+abstract class DockedSidePanel {
     private observer: ResizeObserver;
     readonly divider: HTMLElement;
     private stopDrag?: () => void;
@@ -164,16 +170,12 @@ class PreviewSidePanel {
     private saveTimer?: number;
     private closing = false;
 
-    constructor(readonly entry: CachedPreview, readonly host: HTMLElement,
-        private content: HTMLElement, private plugin: LinkPreviewPlugin) {
-        entry.dock = this;
+    constructor(readonly doc: Document, readonly element: HTMLElement, readonly host: HTMLElement,
+        protected content: HTMLElement, protected plugin: LinkPreviewPlugin) {
         this.ratio = Number.isFinite(plugin.settings.sidePanelRatio) ? plugin.settings.sidePanelRatio : 0.5;
         host.addClass('url-preview-has-side-panel');
-        entry.element.addClass('is-docked');
-        entry.element.removeClass('is-cached');
-        plugin.setPreviewMuted(entry, false);
-        plugin.clearCacheExpiry(entry);
-        this.divider = entry.doc.body.createDiv('url-preview-divider');
+        element.addClass('is-docked');
+        this.divider = doc.body.createDiv('url-preview-divider');
         this.divider.setAttr('role', 'separator');
         this.divider.setAttr('aria-label', 'Resize note and preview');
         this.divider.setAttr('aria-orientation', 'vertical');
@@ -182,29 +184,29 @@ class PreviewSidePanel {
             if (event.button !== 0) return;
             event.preventDefault();
             this.stopDrag?.();
-            entry.element.addClass('is-divider-resizing');
+            element.addClass('is-divider-resizing');
             this.divider.addClass('is-dragging');
-            const shield = entry.doc.body.createDiv('url-preview-divider-shield');
+            const shield = doc.body.createDiv('url-preview-divider-shield');
             const move = (e: PointerEvent) => {
                 const rect = host.getBoundingClientRect();
                 if (rect.width) this.setRatio((e.clientX - rect.left) / rect.width);
             };
             const stop = () => {
-                entry.doc.removeEventListener('pointermove', move);
-                entry.doc.removeEventListener('pointerup', stop);
-                entry.doc.removeEventListener('pointercancel', stop);
-                entry.doc.defaultView?.removeEventListener('blur', stop);
+                doc.removeEventListener('pointermove', move);
+                doc.removeEventListener('pointerup', stop);
+                doc.removeEventListener('pointercancel', stop);
+                doc.defaultView?.removeEventListener('blur', stop);
                 shield.remove();
-                entry.element.removeClass('is-divider-resizing');
+                element.removeClass('is-divider-resizing');
                 this.divider.removeClass('is-dragging');
                 this.stopDrag = undefined;
                 this.scheduleSave();
             };
             this.stopDrag = stop;
-            entry.doc.addEventListener('pointermove', move);
-            entry.doc.addEventListener('pointerup', stop);
-            entry.doc.addEventListener('pointercancel', stop);
-            entry.doc.defaultView?.addEventListener('blur', stop);
+            doc.addEventListener('pointermove', move);
+            doc.addEventListener('pointerup', stop);
+            doc.addEventListener('pointercancel', stop);
+            doc.defaultView?.addEventListener('blur', stop);
         });
         this.divider.addEventListener('keydown', event => {
             if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -213,15 +215,25 @@ class PreviewSidePanel {
             this.scheduleSave();
         });
         this.observer = new ResizeObserver(() => this.updateBounds());
-        this.observer.observe(host);
-        this.observer.observe(content);
+    }
+
+    /** Starts watching the page and draws the panel: called by the subclass once its own fields are set. */
+    protected start() {
+        this.observer.observe(this.host);
+        this.observer.observe(this.content);
         this.updateBounds();
     }
+
+    /** Puts the panel's element over the right part of the page. */
+    protected abstract position(): void;
+
+    /** What the subclass undoes once the panel is closed. */
+    protected abstract closed(trim: boolean): void;
 
     // Autorepeat on the arrow keys would otherwise write data.json ~30 times a second.
     private scheduleSave() {
         if (this.closing) return;
-        const win = this.entry.doc.defaultView ?? window;
+        const win = this.doc.defaultView ?? window;
         if (this.saveTimer !== undefined) win.clearTimeout(this.saveTimer);
         this.saveTimer = win.setTimeout(() => {
             this.saveTimer = undefined;
@@ -231,7 +243,7 @@ class PreviewSidePanel {
     }
 
     updateBounds() {
-        if (!this.host.isConnected || this.host.ownerDocument !== this.entry.doc) { this.close(); return; }
+        if (!this.host.isConnected || this.host.ownerDocument !== this.doc) { this.close(); return; }
         const width = this.host.getBoundingClientRect().width;
         if (width > 0) {
             const ratio = this.clampRatio(this.ratio, width);
@@ -241,9 +253,9 @@ class PreviewSidePanel {
             this.host.setCssProps({ '--url-preview-note-width': `${ratio * 100}%` });
             this.divider.setAttr('aria-valuenow', String(Math.round(ratio * 100)));
         }
-        this.plugin.positionDockPreview(this.entry, this.host, this.content);
-        const rect = this.entry.element.getBoundingClientRect();
-        this.divider.toggleClass('is-hidden', this.entry.element.hasClass('is-cached'));
+        this.position();
+        const rect = this.element.getBoundingClientRect();
+        this.divider.toggleClass('is-hidden', this.element.hasClass('is-cached'));
         this.divider.setCssStyles({ left: `${rect.left - 4}px`, top: `${rect.top}px`, height: `${rect.height}px` });
     }
 
@@ -262,10 +274,11 @@ class PreviewSidePanel {
     }
 
     close(trim = true) {
+        if (this.closing) return;
         this.closing = true;
         if (this.saveTimer !== undefined) {
             // Flush rather than drop it: a drag that ended moments ago is a deliberate choice.
-            (this.entry.doc.defaultView ?? window).clearTimeout(this.saveTimer);
+            (this.doc.defaultView ?? window).clearTimeout(this.saveTimer);
             this.saveTimer = undefined;
             this.plugin.settings.sidePanelRatio = this.ratio;
             void this.plugin.saveSettings();
@@ -275,7 +288,135 @@ class PreviewSidePanel {
         this.divider.remove();
         this.host.removeClass('url-preview-has-side-panel');
         this.host.setCssProps({ '--url-preview-note-width': '' });
+        this.closed(trim);
+    }
+}
+
+/** The URL preview, docked: its cached entry stays, muted and parked, once the panel closes. */
+class PreviewSidePanel extends DockedSidePanel {
+    constructor(readonly entry: CachedPreview, host: HTMLElement, content: HTMLElement, plugin: LinkPreviewPlugin) {
+        super(entry.doc, entry.element, host, content, plugin);
+        entry.dock = this;
+        entry.element.removeClass('is-cached');
+        plugin.setPreviewMuted(entry, false);
+        plugin.clearCacheExpiry(entry);
+        this.start();
+    }
+
+    protected position() {
+        this.plugin.positionDockPreview(this.entry, this.host, this.content);
+    }
+
+    protected closed(trim: boolean) {
         this.plugin.hideDockPreview(this.entry, trim);
+    }
+}
+
+/** The pseudo-address the note panel's zoom is kept under, beside the websites' own. */
+const NOTE_ZOOM_URL = 'https://note.url-preview.invalid/';
+
+/**
+ * A vault note docked beside a note or board, as a URL preview docks: its title, the zoom of the URL panel, Open in tab
+ * and Close over the note rendered in reading view. It renders again whenever the note changes, and an internal link in
+ * it opens its note in the panel. Other plugins open it with `api.openNote`.
+ */
+class NoteSidePanel extends DockedSidePanel {
+    private file: TFile;
+    private readonly component = new Component();
+    private readonly titleEl: HTMLElement;
+    private readonly body: HTMLElement;
+    private renderTimer?: number;
+
+    constructor(doc: Document, file: TFile, host: HTMLElement, content: HTMLElement, plugin: LinkPreviewPlugin) {
+        const element = doc.body.createDiv('hover-popup url-preview-note-panel');
+        super(doc, element, host, content, plugin);
+        this.file = file;
+        const buttons = element.createDiv('preview-buttons');
+        this.titleEl = buttons.createDiv('preview-note-title');
+        plugin.createNoteZoomControls(buttons, element);
+        const openBtn = buttons.createEl('button', { cls: 'clickable-icon preview-open-button' });
+        setIcon(openBtn, 'file-symlink');
+        plugin.setNoteToolbarTooltip(openBtn, 'Open in new tab');
+        openBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            void plugin.app.workspace.getLeaf('tab').openFile(this.file);
+            this.close();
+        });
+        const closeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-close-button' });
+        setIcon(closeBtn, 'x');
+        plugin.setNoteToolbarTooltip(closeBtn, 'Close');
+        closeBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            this.close();
+        });
+        const wrapper = element.createDiv('preview-iframe-wrapper preview-scaled-viewport');
+        const frame = wrapper.createDiv('preview-frame url-preview-note-frame');
+        this.body = frame.createDiv('markdown-preview-view markdown-rendered url-preview-note-body');
+        // An internal link opens its note here; a modifier click keeps Obsidian's own meaning.
+        this.body.addEventListener('click', event => {
+            const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a.internal-link');
+            if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            const href = link.getAttribute('data-href') ?? link.getAttribute('href') ?? '';
+            const dest = plugin.app.metadataCache.getFirstLinkpathDest(href.split('#')[0] ?? '', this.file.path);
+            event.preventDefault();
+            event.stopPropagation();
+            if (dest && dest.extension === 'md') this.show(dest);
+            else void plugin.app.workspace.openLinkText(href, this.file.path);
+        });
+        this.component.load();
+        this.component.registerEvent(plugin.app.vault.on('modify', changed => {
+            if (changed.path === this.file.path) this.scheduleRender();
+        }));
+        this.component.registerEvent(plugin.app.vault.on('rename', (changed) => {
+            if (changed === this.file) this.renderTitle();
+        }));
+        this.start();
+        this.show(file);
+    }
+
+    show(file: TFile) {
+        this.file = file;
+        this.renderTitle();
+        void this.render();
+    }
+
+    private renderTitle() {
+        const title: unknown = this.plugin.app.metadataCache.getFileCache(this.file)?.frontmatter?.title;
+        this.titleEl.setText(typeof title === 'string' && title.trim() ? title : this.file.basename);
+        this.plugin.setNoteToolbarTooltip(this.titleEl, this.file.path);
+    }
+
+    private scheduleRender() {
+        const win = this.doc.defaultView ?? window;
+        if (this.renderTimer !== undefined) win.clearTimeout(this.renderTimer);
+        this.renderTimer = win.setTimeout(() => {
+            this.renderTimer = undefined;
+            void this.render();
+        }, 200);
+    }
+
+    private async render() {
+        const file = this.file;
+        const text = await this.plugin.app.vault.cachedRead(file);
+        if (file !== this.file) return;
+        // The properties block is the note's metadata, not its text: reading view shows it apart, the panel leaves it out.
+        const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+        const scroll = this.body.parentElement?.scrollTop ?? 0;
+        this.body.empty();
+        await MarkdownRenderer.render(this.plugin.app, body, this.body, file.path, this.component);
+        if (this.body.parentElement) this.body.parentElement.scrollTop = scroll;
+    }
+
+    protected position() {
+        this.plugin.positionNotePanel(this.element, this.host, this.content);
+    }
+
+    protected closed() {
+        const win = this.doc.defaultView ?? window;
+        if (this.renderTimer !== undefined) win.clearTimeout(this.renderTimer);
+        this.component.unload();
+        this.element.remove();
+        this.plugin.forgetNotePanel(this);
     }
 }
 
@@ -520,13 +661,23 @@ export interface UrlPreviewApi {
      * the side panel straight away. False when the URL is not one a preview can show.
      */
     open(url: string, options: { anchor: HTMLElement; side?: boolean }): boolean;
+    /**
+     * Shows a vault note in the side panel beside the note or board `anchor` sits in, as a docked URL preview sits there:
+     * reading view, the panel's zoom, Open in tab and Close. It takes the place of a URL preview docked there, and a URL
+     * docked later takes its place. `path` is a vault path or a link text. False when there is no such note, or no note or
+     * board around `anchor` to dock beside.
+     */
+    openNote(path: string, options: { anchor: HTMLElement }): boolean;
 }
 
 export default class LinkPreviewPlugin extends Plugin {
     settings: LinkPreviewSettings;
     readonly api: UrlPreviewApi = {
         open: (url, options) => this.openPreviewForUrl(url, options.anchor, options.side === true),
+        openNote: (path, options) => this.openNoteForPath(path, options.anchor),
     };
+    /** The note panels open, one per window at most. */
+    private readonly notePanels = new Set<NoteSidePanel>();
     private activePreview?: {
         element: HTMLElement,
         cleanup: () => void,
@@ -564,6 +715,7 @@ export default class LinkPreviewPlugin extends Plugin {
         await this.loadSettings();
         this.registerEvent(this.app.workspace.on('layout-change', () => {
             for (const entry of this.previewCache.values()) entry.dock?.updateBounds();
+            for (const panel of this.notePanels) panel.updateBounds();
         }));
         await this.removeLegacyPreviewCache();
         
@@ -3047,6 +3199,53 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.applyPreviewViewportProps(entry.element, entry.controller.currentUrl);
     }
 
+    /** Places a note panel as `positionDockPreview` places a docked preview: the page's right part, the zoom applied. */
+    positionNotePanel(element: HTMLElement, host: HTMLElement, content: HTMLElement) {
+        const rect = host.getBoundingClientRect();
+        const page = content.getBoundingClientRect();
+        element.toggleClass('is-cached', rect.width === 0 || page.height === 0);
+        this.applyPreviewBounds(element, { left: page.right, top: page.top, width: Math.max(0, rect.right - page.right), height: page.height });
+        this.applyPreviewViewportProps(element, NOTE_ZOOM_URL);
+    }
+
+    createNoteZoomControls(buttons: HTMLElement, element: HTMLElement) {
+        this.createZoomControls(buttons, element, () => NOTE_ZOOM_URL);
+    }
+
+    setNoteToolbarTooltip(el: HTMLElement, label: string) {
+        this.setToolbarTooltip(el, label);
+    }
+
+    forgetNotePanel(panel: NoteSidePanel) {
+        this.notePanels.delete(panel);
+    }
+
+    /** `api.openNote`: the note in the side panel beside the note or board `anchor` sits in. */
+    private openNoteForPath(path: string, anchor: HTMLElement): boolean {
+        if (this.unloaded || !anchor.isConnected) return false;
+        const file = this.app.vault.getFileByPath(path) ?? this.app.metadataCache.getFirstLinkpathDest(path, '');
+        if (!file || file.extension !== 'md') return false;
+        const doc = anchor.ownerDocument;
+        let leaf: WorkspaceLeaf | null = null;
+        this.app.workspace.iterateAllLeaves((candidate) => {
+            if (!leaf && candidate.view.containerEl.ownerDocument === doc && candidate.view.containerEl.contains(anchor) &&
+                (candidate.view instanceof MarkdownView || candidate.view.getViewType() === 'kanban')) leaf = candidate;
+        });
+        const host = (leaf as WorkspaceLeaf | null)?.view.containerEl;
+        const content = host?.querySelector<HTMLElement>(':scope > .view-content');
+        if (!host || !content) return false;
+        const open = [...this.notePanels].find(panel => panel.doc === doc);
+        if (open && open.host === host) {
+            open.show(file);
+            return true;
+        }
+        open?.close();
+        this.cleanupActivePreview();
+        for (const other of this.previewCache.values()) if (other.doc === doc) other.dock?.close();
+        this.notePanels.add(new NoteSidePanel(doc, file, host, content, this));
+        return true;
+    }
+
     private dockPreview(container: HTMLElement) {
         const entry = this.previewCache.get(container);
         if (entry?.dock) {
@@ -3100,6 +3299,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         for (const other of this.previewCache.values()) {
             if (other.doc === entry.doc) other.dock?.close();
         }
+        // One side panel per window: a docked URL takes the note panel's place.
+        for (const panel of [...this.notePanels]) if (panel.doc === entry.doc) panel.close();
         const rect = container.getBoundingClientRect();
         entry.floatingBounds = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
         entry.floatingAnchor = this.activePreview?.link;
@@ -3646,6 +3847,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             doc.body.removeClass('url-preview-hide-close-button');
         }
         this.cleanupActivePreview();
+        for (const panel of [...this.notePanels]) panel.close();
         // One preview that fails to tear down must not abort the rest of the unload.
         for (const entry of [...this.previewCache.values()]) {
             try {

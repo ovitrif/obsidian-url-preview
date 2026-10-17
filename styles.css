@@ -871,3 +871,27 @@ body.url-preview-hide-open-in-browser .hover-popup[data-preview-url] .preview-op
 body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close-button {
     display: none;
 }
+
+/* The note panel (NoteSidePanel, api.openNote): a vault note docked beside a note or board as a URL preview docks, the
+   same toolbar with the note's title where the address sits, over the note in reading view, scaled by the panel's zoom. */
+.url-preview-note-panel .preview-note-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 8px;
+    font-size: var(--font-ui-small);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+}
+
+.url-preview-note-panel .url-preview-note-frame {
+    display: block;
+    overflow: auto;
+}
+
+.url-preview-note-panel .url-preview-note-body {
+    padding: var(--file-margins, 16px 24px);
+    user-select: text;
+}

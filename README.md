@@ -67,11 +67,13 @@ Other plugins can open a preview through `app.plugins.plugins['url-preview'].api
 
 ```ts
 api.open(url: string, options: { anchor: HTMLElement; side?: boolean }): boolean
+api.openNote(path: string, options: { anchor: HTMLElement }): boolean
 ```
 
 - `anchor` is the element the preview opens beside, as if a link there had been modifier-clicked. When the side panel is already open beside it, the panel shows the URL.
 - `side: true` opens the preview in the side panel straight away.
 - It returns `false`, and opens nothing, for a URL that is not `http` or `https`.
+- `openNote` shows the vault note at `path` in the side panel beside the note or board that holds `anchor`, rendered as reading view, with the same zoom controls. It follows edits to the note, a link in it opens in the panel, and it shares the panel with docked URLs: one replaces the other. It returns `false` when the path is no note or no note or board can hold the panel.
 
 ## Authentication
 
