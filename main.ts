@@ -314,6 +314,10 @@ class PreviewSidePanel extends DockedSidePanel {
 
 /** The pseudo-address the note panel's zoom is kept under, beside the websites' own. */
 const NOTE_ZOOM_URL = 'https://note.url-preview.invalid/';
+/** Fired on the note panel after each render, with `{ path, scroller, mount }`; other plugins decorate it from there. */
+const NOTE_RENDER_EVENT = 'url-preview-note-render';
+/** Fired on the note panel as it closes, before it leaves the document. */
+const NOTE_CLOSE_EVENT = 'url-preview-note-close';
 
 /**
  * A vault note docked beside a note or board, as a URL preview docks: its title, the zoom of the URL panel, Open in tab
@@ -401,10 +405,17 @@ class NoteSidePanel extends DockedSidePanel {
         if (file !== this.file) return;
         // The properties block is the note's metadata, not its text: reading view shows it apart, the panel leaves it out.
         const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
-        const scroll = this.body.parentElement?.scrollTop ?? 0;
+        // The body is the scroller (Obsidian's .markdown-preview-view scrolls), so a re-render keeps its place.
+        const scroll = this.body.scrollTop;
         this.body.empty();
         await MarkdownRenderer.render(this.plugin.app, body, this.body, file.path, this.component);
-        if (this.body.parentElement) this.body.parentElement.scrollTop = scroll;
+        if (file !== this.file || !this.element.isConnected) return;
+        this.body.scrollTop = scroll;
+        // Arc's sticky headings follow the panel's note (NOTE_RENDER_EVENT in AGENTS.md).
+        this.element.dispatchEvent(new CustomEvent(NOTE_RENDER_EVENT, {
+            bubbles: true,
+            detail: { path: file.path, scroller: this.body, mount: this.body.parentElement },
+        }));
     }
 
     protected position() {
@@ -415,6 +426,7 @@ class NoteSidePanel extends DockedSidePanel {
         const win = this.doc.defaultView ?? window;
         if (this.renderTimer !== undefined) win.clearTimeout(this.renderTimer);
         this.component.unload();
+        this.element.dispatchEvent(new CustomEvent(NOTE_CLOSE_EVENT, { bubbles: true }));
         this.element.remove();
         this.plugin.forgetNotePanel(this);
     }

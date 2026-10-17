@@ -900,6 +900,8 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
 }
 
 .url-preview-note-panel .url-preview-note-frame {
+    /* Arc's sticky heading bar is placed in the frame, against its top. */
+    position: relative;
     display: block;
     overflow: auto;
 }

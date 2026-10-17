@@ -49,6 +49,7 @@ The main plugin class handles the lifecycle and core logic:
   - The public entry point for other plugins (documented in README). Opens through `openPreviewForLink` with `anchor` as the link and `api:<url>` as its source key, so one anchor can open several URLs; `side` then docks the preview.
 - **`api.openNote(path, { anchor })`**:
   - Opens `NoteSidePanel`, which shares `DockedSidePanel` (divider, ratio, resize, close) with `PreviewSidePanel`. One side panel per window: `dockPreview` closes note panels, and `openNoteForPath` closes URL docks. Zoom is kept under the `NOTE_ZOOM_URL` key, one level for all notes.
+  - After each render the panel fires `url-preview-note-render` (bubbling, `detail: { path, scroller, mount }`: the scrolling `.url-preview-note-body` and the scaled frame it sits in), and `url-preview-note-close` as it closes. Obsidian Arc mounts its sticky heading bar from them; keep both when changing the panel.
 - **`showPreview(link, url, hoverElement, sourceKey?)`**:
   - Reuses a visible side panel that owns the link, otherwise opens a floating preview.
   - Each call takes a request token; anything that resumes after an `await` drops out when a newer click has started.
