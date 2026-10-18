@@ -339,11 +339,20 @@ class NoteSidePanel extends DockedSidePanel {
         this.titleEl = buttons.createDiv('preview-note-title');
         plugin.createNoteZoomControls(buttons, element);
         const openBtn = buttons.createEl('button', { cls: 'clickable-icon preview-open-button' });
-        setIcon(openBtn, 'file-symlink');
-        plugin.setNoteToolbarTooltip(openBtn, 'Open in new tab');
+        setIcon(openBtn, 'columns-2');
+        plugin.setNoteToolbarTooltip(openBtn, 'Open to the right');
+        // The panel only reads the note: this opens it, editable, in a split to the right of the page the panel sits on,
+        // which takes the panel's place (Ovi, 18 Oct).
         openBtn.addEventListener('click', event => {
             event.stopPropagation();
-            void plugin.app.workspace.getLeaf('tab').openFile(this.file);
+            const workspace = plugin.app.workspace;
+            let beside: WorkspaceLeaf | null = null;
+            workspace.iterateAllLeaves(leaf => {
+                if (!beside && leaf.view.containerEl.contains(host)) beside = leaf;
+            });
+            const found = beside as WorkspaceLeaf | null;
+            const leaf = found ? workspace.createLeafBySplit(found, 'vertical') : workspace.getLeaf('split', 'vertical');
+            void leaf.openFile(this.file, { active: true });
             this.close();
         });
         const closeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-close-button' });
