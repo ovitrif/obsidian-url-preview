@@ -899,6 +899,24 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
     color: var(--text-normal);
 }
 
+/* The panel's note is a Markdown view of its own (NoteSidePanel): it fills the frame, and its view header gives way to the
+   panel's toolbar, which has the name, zoom, the Reading view / Live Preview switch, open and close. */
+.url-preview-note-panel .url-preview-note-frame > .workspace-leaf {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.url-preview-note-panel .url-preview-note-frame > .workspace-leaf > .workspace-leaf-content {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.url-preview-note-panel .url-preview-note-frame .view-header {
+    display: none;
+}
+
 /* The file name copies on a click: it shows as a label you can press, never a link. */
 .url-preview-note-panel .preview-note-name {
     cursor: pointer;
@@ -918,10 +936,13 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
     overflow: auto;
 }
 
-/* The text starts where the title does (the toolbar's 8px and the title's 8px), at any zoom: the frame is scaled. */
-.url-preview-note-panel .url-preview-note-body {
-    padding: calc(12px / var(--preview-frame-scale, 1)) calc(16px / var(--preview-frame-scale, 1)) calc(32px / var(--preview-frame-scale, 1));
-    user-select: text;
+/* The note panel's frame zooms with CSS zoom, not a transform: its editor (Live Preview) measures text and places the
+   caret in the zoomed layout, which a transform would leave unscaled, so clicks would land off (Ovi, 21 Oct). */
+.url-preview-note-panel .preview-iframe-wrapper.preview-scaled-viewport .preview-frame.url-preview-note-frame {
+    width: 100%;
+    height: calc(100% / var(--preview-frame-scale, 1));
+    transform: none;
+    zoom: var(--preview-frame-scale, 1);
 }
 
 /* The note panel's toolbar shows only Close until the pointer is over it, as Arc's view header zoom does (Ovi, 17 Oct):

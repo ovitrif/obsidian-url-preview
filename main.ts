@@ -11,7 +11,6 @@ import {
     Component,
     Editor,
     TFile,
-    MarkdownRenderer,
     MarkdownView,
     Menu,
     Notice,
@@ -324,15 +323,28 @@ const NOTE_CLOSE_EVENT = 'url-preview-note-close';
  * and Close over the note rendered in reading view. It renders again whenever the note changes, and an internal link in
  * it opens its note in the panel. Other plugins open it with `api.openNote`.
  */
+/** How the note panel shows its note: Obsidian's own Reading view, or Live Preview to edit it (Ovi, 21 Oct). */
+type NotePanelMode = 'preview' | 'source';
+
+/** Obsidian's own list marker rule for Live Preview's wrapped-line indent. */
+const LIST_MARKER = /^([>\s]*)(([*+-] |(\d+)([.)] ))(?:\[(.)\] )?)?/;
+
 class NoteSidePanel extends DockedSidePanel {
     private file: TFile;
-    private readonly component = new Component();
     private readonly titleEl: HTMLElement;
-    private readonly body: HTMLElement;
-    private renderTimer?: number;
+    /**
+     * A Markdown view of its own, outside the workspace layout: the note looks exactly as Reading view and Live Preview
+     * show it in a tab (the panel's own renderer spaced lists apart, Ovi 21 Oct), and an edit saves as it does there.
+     */
+    private readonly leaf: WorkspaceLeaf;
+    private readonly modeBtn: HTMLButtonElement;
+    private readonly indents: MutationObserver;
+    private static mode: NotePanelMode = 'preview';
 
     constructor(doc: Document, file: TFile, host: HTMLElement, content: HTMLElement, plugin: LinkPreviewPlugin) {
-        const element = doc.body.createDiv('hover-popup url-preview-note-panel');
+        // Inside the main workspace, where the theme's note styles reach (Arc scopes its reading and Live Preview rules
+        // to `.workspace-split.mod-root`): the note looks as it does in a tab there (Ovi, 21 Oct).
+        const element = (host.closest<HTMLElement>('.workspace-split.mod-root') ?? doc.body).createDiv('hover-popup url-preview-note-panel');
         super(doc, element, host, content, plugin);
         this.file = file;
         const buttons = element.createDiv('preview-buttons');
@@ -346,11 +358,16 @@ class NoteSidePanel extends DockedSidePanel {
             void navigator.clipboard.writeText(text).then(() => new Notice(`Copied ${text}`), () => new Notice(`Could not copy ${text}`));
         });
         plugin.createNoteZoomControls(buttons, element);
+        this.modeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-mode-button' });
+        this.modeBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            void this.setMode(NoteSidePanel.mode === 'preview' ? 'source' : 'preview');
+        });
         const openBtn = buttons.createEl('button', { cls: 'clickable-icon preview-open-button' });
         setIcon(openBtn, 'columns-2');
         plugin.setNoteToolbarTooltip(openBtn, 'Open to the right');
-        // The panel only reads the note: this opens it, editable, in a split to the right of the page the panel sits on,
-        // which takes the panel's place (Ovi, 18 Oct).
+        // This opens the note in a split to the right of the page the panel sits on, which takes the panel's place
+        // (Ovi, 18 Oct).
         openBtn.addEventListener('click', event => {
             event.stopPropagation();
             const workspace = plugin.app.workspace;
@@ -360,7 +377,7 @@ class NoteSidePanel extends DockedSidePanel {
             });
             const found = beside as WorkspaceLeaf | null;
             const leaf = found ? workspace.createLeafBySplit(found, 'vertical') : workspace.getLeaf('split', 'vertical');
-            void leaf.openFile(this.file, { active: true });
+            void leaf.openFile(this.file, { active: true, state: { mode: NoteSidePanel.mode } });
             this.close();
         });
         const closeBtn = buttons.createEl('button', { cls: 'clickable-icon preview-close-button' });
@@ -372,10 +389,14 @@ class NoteSidePanel extends DockedSidePanel {
         });
         const wrapper = element.createDiv('preview-iframe-wrapper preview-scaled-viewport');
         const frame = wrapper.createDiv('preview-frame url-preview-note-frame');
-        this.body = frame.createDiv('markdown-preview-view markdown-rendered url-preview-note-body');
-        // An internal link opens its note here; a modifier click keeps Obsidian's own meaning.
-        this.body.addEventListener('click', event => {
-            const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a.internal-link');
+        const Leaf = WorkspaceLeaf as unknown as new (app: App) => WorkspaceLeaf;
+        this.leaf = new Leaf(plugin.app);
+        frame.appendChild((this.leaf as unknown as { containerEl: HTMLElement }).containerEl);
+        this.indents = new MutationObserver(records => this.fixListIndents(frame, records));
+        this.indents.observe(frame, { subtree: true, attributes: true, attributeFilter: ['style'] });
+        // An internal link in Reading view opens its note here; a modifier click keeps Obsidian's own meaning.
+        frame.addEventListener('click', event => {
+            const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('.markdown-reading-view a.internal-link');
             if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
             const href = link.getAttribute('data-href') ?? link.getAttribute('href') ?? '';
             const dest = plugin.app.metadataCache.getFirstLinkpathDest(href.split('#')[0] ?? '', this.file.path);
@@ -383,14 +404,7 @@ class NoteSidePanel extends DockedSidePanel {
             event.stopPropagation();
             if (dest && dest.extension === 'md') this.show(dest);
             else void plugin.app.workspace.openLinkText(href, this.file.path);
-        });
-        this.component.load();
-        this.component.registerEvent(plugin.app.vault.on('modify', changed => {
-            if (changed.path === this.file.path) this.scheduleRender();
-        }));
-        this.component.registerEvent(plugin.app.vault.on('rename', (changed) => {
-            if (changed === this.file) this.renderTitle();
-        }));
+        }, true);
         this.start();
         this.show(file);
     }
@@ -398,40 +412,74 @@ class NoteSidePanel extends DockedSidePanel {
     show(file: TFile) {
         this.file = file;
         this.renderTitle();
-        void this.render();
+        void this.open();
     }
 
     private renderTitle() {
         this.titleEl.empty();
         const name = this.titleEl.createSpan({ cls: 'preview-note-name', text: this.file.basename });
         this.plugin.setNoteToolbarTooltip(name, `Copy ${this.file.basename}`);
+        setIcon(this.modeBtn, NoteSidePanel.mode === 'preview' ? 'pencil' : 'book-open');
+        this.plugin.setNoteToolbarTooltip(this.modeBtn, NoteSidePanel.mode === 'preview' ? 'Edit (Live Preview)' : 'Read (Reading view)');
     }
 
-    private scheduleRender() {
-        const win = this.doc.defaultView ?? window;
-        if (this.renderTimer !== undefined) win.clearTimeout(this.renderTimer);
-        this.renderTimer = win.setTimeout(() => {
-            this.renderTimer = undefined;
-            void this.render();
-        }, 200);
-    }
-
-    private async render() {
+    private async open() {
         const file = this.file;
-        const text = await this.plugin.app.vault.cachedRead(file);
-        if (file !== this.file) return;
-        // The properties block is the note's metadata, not its text: reading view shows it apart, the panel leaves it out.
-        const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
-        // The body is the scroller (Obsidian's .markdown-preview-view scrolls), so a re-render keeps its place.
-        const scroll = this.body.scrollTop;
-        this.body.empty();
-        await MarkdownRenderer.render(this.plugin.app, body, this.body, file.path, this.component);
+        await this.leaf.openFile(file, { state: { mode: NoteSidePanel.mode, source: false } });
         if (file !== this.file || !this.element.isConnected) return;
-        this.body.scrollTop = scroll;
-        // Arc's sticky headings follow the panel's note (NOTE_RENDER_EVENT in AGENTS.md).
+        this.announce();
+    }
+
+    /** Reading view or Live Preview, kept for the next panel too. */
+    private async setMode(mode: NotePanelMode) {
+        NoteSidePanel.mode = mode;
+        this.renderTitle();
+        const view = this.leaf.view;
+        if (view instanceof MarkdownView) {
+            await view.setState({ ...view.getState(), mode, source: false }, { history: false });
+            if (mode === 'source') view.editor.focus();
+        } else await this.open();
+        this.announce();
+    }
+
+    private readonly fixedIndents = new WeakMap<HTMLElement, string>();
+
+    /**
+     * Live Preview indents a wrapped list line by its marker's width, measured in screen pixels and written as CSS
+     * pixels, so under the panel's zoom the indent shrinks twice. Each line Obsidian indents is measured again here
+     * and given its width at 100%, as a tab shows it.
+     */
+    private fixListIndents(frame: HTMLElement, records: MutationRecord[]) {
+        const zoom = parseFloat(getComputedStyle(frame).getPropertyValue('zoom')) || 1;
+        const view = this.leaf.view;
+        if (zoom === 1 || !(view instanceof MarkdownView) || NoteSidePanel.mode !== 'source') return;
+        const cm = (view.editor as unknown as { cm: EditorView }).cm;
+        for (const record of records) {
+            const line = record.target;
+            if (!(line instanceof HTMLElement) || !line.classList.contains('cm-line')) continue;
+            const written = line.style.paddingInlineStart;
+            if (!written || this.fixedIndents.get(line) === written) continue;
+            const from = cm.state.doc.lineAt(cm.posAtDOM(line, 0));
+            const marker = LIST_MARKER.exec(from.text)?.[0];
+            const end = marker ? cm.coordsAtPos(from.from + marker.length, 1) : null;
+            if (!end) continue;
+            // The indent pair leaves the first line where it starts, so the marker's end is measured in place.
+            const rect = line.getBoundingClientRect();
+            const size = Math.floor(Math.abs(end.right - (rect.left + parseFloat(getComputedStyle(line).borderLeftWidth))) / zoom);
+            if (!size) continue;
+            this.fixedIndents.set(line, `${size}px`);
+            line.setCssStyles({ textIndent: `${-size}px`, paddingInlineStart: `${size}px` });
+        }
+    }
+
+    /** Arc's sticky headings follow the panel's note (NOTE_RENDER_EVENT in AGENTS.md). */
+    private announce() {
+        const view = this.leaf.view;
+        const scroller = view.containerEl.querySelector<HTMLElement>(NoteSidePanel.mode === 'preview' ? '.markdown-preview-view' : '.cm-scroller');
+        if (!scroller) return;
         this.element.dispatchEvent(new CustomEvent(NOTE_RENDER_EVENT, {
             bubbles: true,
-            detail: { path: file.path, scroller: this.body, mount: this.body.parentElement },
+            detail: { path: this.file.path, scroller, mount: scroller.parentElement },
         }));
     }
 
@@ -440,9 +488,12 @@ class NoteSidePanel extends DockedSidePanel {
     }
 
     protected closed() {
-        const win = this.doc.defaultView ?? window;
-        if (this.renderTimer !== undefined) win.clearTimeout(this.renderTimer);
-        this.component.unload();
+        this.indents.disconnect();
+        try {
+            this.leaf.detach();
+        } catch {
+            this.leaf.view?.unload();
+        }
         this.element.dispatchEvent(new CustomEvent(NOTE_CLOSE_EVENT, { bubbles: true }));
         this.element.remove();
         this.plugin.forgetNotePanel(this);
