@@ -337,6 +337,14 @@ class NoteSidePanel extends DockedSidePanel {
         this.file = file;
         const buttons = element.createDiv('preview-buttons');
         this.titleEl = buttons.createDiv('preview-note-title');
+        // The task's file name, which a click copies (Ovi, 21 Oct: "I want to see the task filename that I can click to copy").
+        this.titleEl.addEventListener('click', event => {
+            const name = (event.target as HTMLElement | null)?.closest('.preview-note-name');
+            if (!name) return;
+            event.stopPropagation();
+            const text = this.file.basename;
+            void navigator.clipboard.writeText(text).then(() => new Notice(`Copied ${text}`), () => new Notice(`Could not copy ${text}`));
+        });
         plugin.createNoteZoomControls(buttons, element);
         const openBtn = buttons.createEl('button', { cls: 'clickable-icon preview-open-button' });
         setIcon(openBtn, 'columns-2');
@@ -394,9 +402,9 @@ class NoteSidePanel extends DockedSidePanel {
     }
 
     private renderTitle() {
-        const title: unknown = this.plugin.app.metadataCache.getFileCache(this.file)?.frontmatter?.title;
-        this.titleEl.setText(typeof title === 'string' && title.trim() ? title : this.file.basename);
-        this.plugin.setNoteToolbarTooltip(this.titleEl, this.file.path);
+        this.titleEl.empty();
+        const name = this.titleEl.createSpan({ cls: 'preview-note-name', text: this.file.basename });
+        this.plugin.setNoteToolbarTooltip(name, `Copy ${this.file.basename}`);
     }
 
     private scheduleRender() {

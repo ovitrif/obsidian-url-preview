@@ -899,6 +899,18 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
     color: var(--text-normal);
 }
 
+/* The file name copies on a click: it shows as a label you can press, never a link. */
+.url-preview-note-panel .preview-note-name {
+    cursor: pointer;
+    border-radius: var(--radius-s);
+    padding: 1px 4px;
+    margin: 0 -4px;
+}
+
+.url-preview-note-panel .preview-note-name:hover {
+    background-color: var(--background-modifier-hover);
+}
+
 .url-preview-note-panel .url-preview-note-frame {
     /* Arc's sticky heading bar is placed in the frame, against its top. */
     position: relative;
