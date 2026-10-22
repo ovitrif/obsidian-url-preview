@@ -50,6 +50,7 @@ The main plugin class handles the lifecycle and core logic:
 - **`api.openNote(path, { anchor })`**:
   - Opens `NoteSidePanel`, which shares `DockedSidePanel` (divider, ratio, resize, close) with `PreviewSidePanel`. One side panel per window: `dockPreview` closes note panels, and `openNoteForPath` closes URL docks. Zoom is kept under the `NOTE_ZOOM_URL` key, one level for all notes.
   - The note is a real `MarkdownView` in a detached `WorkspaceLeaf`, mounted inside `.workspace-split.mod-root` so the theme's note rules reach it, scaled with CSS `zoom`. Obsidian measures Live Preview's list indent in screen pixels, so under the zoom `fixListIndents` measures each indented line again at 100%.
+  - The title is the note's folders as crumbs, then its name (a click copies it). A folder crumb calls Arc Theme's `api.openBreadcrumbMenu` when Arc offers it, else an Obsidian `Menu` of the folder; a picked note opens in the panel.
   - `show(file)` puts a new note on the panel's history after the current one (dropping what was ahead); back and forward step through it, and a 400 ms hold or a right click lists the rest that way in an Obsidian `Menu`.
   - After each render the panel fires `url-preview-note-render` (bubbling, `detail: { path, scroller, mount }`: the view's scroller, `.markdown-preview-view` or `.cm-scroller`, and its parent), and `url-preview-note-close` as it closes. Obsidian Arc mounts its sticky heading bar from them; keep both when changing the panel.
 - **`showPreview(link, url, hoverElement, sourceKey?)`**:

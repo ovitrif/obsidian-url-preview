@@ -11,8 +11,10 @@ import {
     Component,
     Editor,
     TFile,
+    TFolder,
     MarkdownView,
     Menu,
+    MenuItem,
     Notice,
     Platform,
     Plugin,
@@ -375,6 +377,12 @@ class NoteSidePanel extends DockedSidePanel {
         this.titleEl = buttons.createDiv('preview-note-title');
         // The task's file name, which a click copies (Ovi, 21 Oct: "I want to see the task filename that I can click to copy").
         this.titleEl.addEventListener('click', event => {
+            const crumb = (event.target as HTMLElement | null)?.closest<HTMLElement>('.preview-note-crumb');
+            if (crumb) {
+                event.stopPropagation();
+                this.openCrumb(crumb);
+                return;
+            }
             const name = (event.target as HTMLElement | null)?.closest('.preview-note-name');
             if (!name) return;
             event.stopPropagation();
@@ -518,10 +526,52 @@ class NoteSidePanel extends DockedSidePanel {
         this.backBtn.disabled = this.at <= 0;
         this.forwardBtn.disabled = this.at >= this.history.length - 1;
         this.titleEl.empty();
+        // The note's folders as breadcrumbs, each opening its folder's docs (Ovi, 22 Oct: "access all docs related to a
+        // task… from within the title"), then the name, which copies.
+        const folders = this.file.parent && !this.file.parent.isRoot() ? this.file.parent.path.split('/') : [];
+        folders.forEach((segment, index) => {
+            const crumb = this.titleEl.createSpan({ cls: 'preview-note-crumb', text: segment });
+            crumb.dataset.path = folders.slice(0, index + 1).join('/');
+            this.titleEl.createSpan({ cls: 'preview-note-crumb-separator', text: '/' });
+        });
         const name = this.titleEl.createSpan({ cls: 'preview-note-name', text: this.file.basename });
         this.plugin.setNoteToolbarTooltip(name, `Copy ${this.file.basename}`);
         setIcon(this.modeBtn, NoteSidePanel.mode === 'preview' ? 'pencil' : 'book-open');
         this.plugin.setNoteToolbarTooltip(this.modeBtn, NoteSidePanel.mode === 'preview' ? 'Edit (Live Preview)' : 'Read (Reading view)');
+    }
+
+    /**
+     * A folder crumb's dropdown: Arc's breadcrumb menu when Arc offers it, its picks shown here (a new-tab pick in a tab);
+     * else Obsidian's menu of the folder, its subfolders as submenus.
+     */
+    private openCrumb(crumb: HTMLElement) {
+        const app = this.plugin.app;
+        const folder = app.vault.getFolderByPath(crumb.dataset.path ?? '');
+        if (!folder) return;
+        const open = (file: TFile, newTab: boolean) => {
+            if (newTab || file.extension !== 'md') void app.workspace.getLeaf('tab').openFile(file);
+            else this.show(file);
+        };
+        const arc = (app as App & { plugins?: { plugins?: Record<string, { api?: { openBreadcrumbMenu?: (anchor: HTMLElement, folderPath: string, currentPath: string, open: (file: TFile, newTab: boolean) => void) => boolean } }> } }).plugins?.plugins?.['arc-theme'];
+        if (arc?.api?.openBreadcrumbMenu?.(crumb, folder.path, this.file.path, open)) return;
+        const fill = (menu: Menu, from: TFolder) => {
+            const children = [...from.children].sort((a, b) => Number(b instanceof TFolder) - Number(a instanceof TFolder) || a.name.localeCompare(b.name));
+            for (const child of children) {
+                menu.addItem(item => {
+                    if (child instanceof TFolder) {
+                        item.setTitle(child.name).setIcon('folder');
+                        const sub = (item as MenuItem & { setSubmenu?: () => Menu }).setSubmenu?.();
+                        if (sub) fill(sub, child);
+                    } else if (child instanceof TFile) {
+                        item.setTitle(child.extension === 'md' ? child.basename : child.name).setIcon('file').setChecked(child === this.file).onClick(event => open(child, event instanceof MouseEvent && (event.metaKey || event.ctrlKey)));
+                    }
+                });
+            }
+        };
+        const menu = new Menu();
+        fill(menu, folder);
+        const rect = crumb.getBoundingClientRect();
+        menu.showAtPosition({ x: rect.left, y: rect.bottom }, crumb.ownerDocument);
     }
 
     private async open() {

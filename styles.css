@@ -924,6 +924,26 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
     display: none;
 }
 
+/* The note's folders before its name: each opens its folder's docs, quieter than the name. */
+.url-preview-note-panel .preview-note-crumb {
+    cursor: pointer;
+    border-radius: var(--radius-s);
+    padding: 1px 4px;
+    margin: 0 -4px;
+    font-weight: var(--font-normal);
+    color: var(--text-muted);
+}
+
+.url-preview-note-panel .preview-note-crumb:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.url-preview-note-panel .preview-note-crumb-separator {
+    padding: 0 6px;
+    color: var(--text-faint);
+}
+
 /* The file name copies on a click: it shows as a label you can press, never a link. */
 .url-preview-note-panel .preview-note-name {
     cursor: pointer;
