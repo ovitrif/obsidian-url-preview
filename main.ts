@@ -318,6 +318,7 @@ class PreviewSidePanel extends DockedSidePanel {
         plugin.setPreviewMuted(entry, false);
         plugin.clearCacheExpiry(entry);
         this.start();
+        plugin.savePanels();
     }
 
     protected position() {
@@ -326,6 +327,7 @@ class PreviewSidePanel extends DockedSidePanel {
 
     protected closed(trim: boolean) {
         this.plugin.hideDockPreview(this.entry, trim);
+        this.plugin.savePanels();
     }
 }
 
@@ -333,6 +335,18 @@ class PreviewSidePanel extends DockedSidePanel {
 const NOTE_ZOOM_URL = 'https://note.url-preview.invalid/';
 /** Fired on the note panel after each render, with `{ path, scroller, mount }`; other plugins decorate it from there. */
 const NOTE_RENDER_EVENT = 'url-preview-note-render';
+
+/** The side panels kept across restarts, in the vault's local storage (`savePanels`). */
+const SIDE_PANELS_KEY = 'url-preview-side-panels';
+
+interface SavedSidePanel {
+    /** The workspace leaf the panel sits on. */
+    leaf: string;
+    /** A note panel's history: the notes' paths and the one shown. */
+    note?: { history: string[]; at: number };
+    /** A docked preview's page. */
+    url?: string;
+}
 /** Fired on the note panel as it closes, before it leaves the document. */
 const NOTE_CLOSE_EVENT = 'url-preview-note-close';
 
@@ -455,6 +469,18 @@ class NoteSidePanel extends DockedSidePanel {
         this.file = this.history[index];
         this.renderTitle();
         void this.open();
+        this.plugin.savePanels();
+    }
+
+    /** The history as `savePanels` keeps it: the notes' paths and where the panel stands among them. */
+    historyState(): { history: string[]; at: number } {
+        return { history: this.history.map(file => file.path), at: this.at };
+    }
+
+    /** The history a restart brought back, shown at `at`. */
+    restoreHistory(files: TFile[], at: number) {
+        this.history.splice(0, Infinity, ...files);
+        this.showAt(at);
     }
 
     /**
@@ -648,6 +674,7 @@ class NoteSidePanel extends DockedSidePanel {
         this.element.dispatchEvent(new CustomEvent(NOTE_CLOSE_EVENT, { bubbles: true }));
         this.element.remove();
         this.plugin.forgetNotePanel(this);
+        this.plugin.savePanels();
     }
 }
 
@@ -909,6 +936,9 @@ export default class LinkPreviewPlugin extends Plugin {
     };
     /** The note panels open, one per window at most. */
     private readonly notePanels = new Set<NoteSidePanel>();
+    /** Side panels saved before a restart whose page has not loaded yet; `restorePanels` reopens them once it has. */
+    private pendingPanels: SavedSidePanel[] = [];
+    private restoringPanels = false;
     private activePreview?: {
         element: HTMLElement,
         cleanup: () => void,
@@ -956,6 +986,14 @@ export default class LinkPreviewPlugin extends Plugin {
             // still fire for a plugin that was disabled before the layout settled.
             if (this.unloaded) return;
             this.registerGlobalHandler();
+            this.pendingPanels = this.loadSavedPanels();
+            this.restorePanels();
+            // A tab restored in the background loads its view only once shown: its panel comes back then.
+            this.registerEvent(this.app.workspace.on('layout-change', () => { if (this.pendingPanels.length) this.restorePanels(); }));
+            // A tab shown loads its view after this event, so the panel waits a moment for it.
+            this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
+                if (this.pendingPanels.length) window.setTimeout(() => { if (!this.unloaded && this.pendingPanels.length) this.restorePanels(); }, 400);
+            }));
         });
 
         this.registerEvent(
@@ -3466,6 +3504,71 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.setToolbarTooltip(el, label);
     }
 
+    /** The id of the workspace leaf whose view is `host`. */
+    private leafIdOf(host: HTMLElement): string | null {
+        let id: string | null = null;
+        this.app.workspace.iterateAllLeaves(leaf => {
+            if (id === null && leaf.view.containerEl === host) id = (leaf as unknown as { id?: string }).id ?? null;
+        });
+        return id;
+    }
+
+    private loadSavedPanels(): SavedSidePanel[] {
+        const saved: unknown = this.app.loadLocalStorage(SIDE_PANELS_KEY);
+        return Array.isArray(saved) ? saved.filter((one): one is SavedSidePanel => typeof (one as SavedSidePanel | null)?.leaf === 'string') : [];
+    }
+
+    /**
+     * Keeps the open side panels across restarts (Ovi, 22 Oct): each one's page (by its leaf), a note panel's history and
+     * place in it, a docked preview's page. In the vault's local storage, which Obsidian keeps in its own app data.
+     */
+    savePanels() {
+        if (this.unloaded || this.restoringPanels) return;
+        const saved: SavedSidePanel[] = [];
+        for (const panel of this.notePanels) {
+            const leaf = this.leafIdOf(panel.host);
+            if (leaf) saved.push({ leaf, note: panel.historyState() });
+        }
+        for (const entry of this.previewCache.values()) {
+            if (!entry.dock) continue;
+            const leaf = this.leafIdOf(entry.dock.host);
+            if (leaf) saved.push({ leaf, url: this.getPreviewFrameUrl(entry.controller) });
+        }
+        for (const one of this.pendingPanels) if (!saved.some(other => other.leaf === one.leaf)) saved.push(one);
+        this.app.saveLocalStorage(SIDE_PANELS_KEY, saved);
+    }
+
+    /** Reopens each saved panel whose page has loaded; one whose tab is gone is dropped, one still loading waits. */
+    private restorePanels() {
+        const waiting: SavedSidePanel[] = [];
+        this.restoringPanels = true;
+        try {
+            for (const one of this.pendingPanels) {
+                const leaf = this.app.workspace.getLeafById(one.leaf);
+                if (!leaf) continue;
+                const host = leaf.view.containerEl;
+                const type = leaf.view.getViewType();
+                // A tab restored in the background is deferred: its view, not yet loaded, names its type already.
+                if (leaf.isDeferred || !host.isConnected || (type !== 'markdown' && type !== 'kanban')) {
+                    waiting.push(one);
+                    continue;
+                }
+                if (one.note) {
+                    const files = one.note.history.map(path => this.app.vault.getFileByPath(path)).filter((file): file is TFile => !!file);
+                    const at = Math.min(Math.max(0, one.note.at - one.note.history.slice(0, one.note.at).filter(path => !this.app.vault.getFileByPath(path)).length), files.length - 1);
+                    if (!files.length || !this.openNoteForPath(files[at].path, host)) continue;
+                    [...this.notePanels].find(panel => panel.host === host)?.restoreHistory(files, at);
+                } else if (one.url) {
+                    this.openPreviewForUrl(one.url, host, true);
+                }
+            }
+        } finally {
+            this.restoringPanels = false;
+        }
+        this.pendingPanels = waiting;
+        this.savePanels();
+    }
+
     forgetNotePanel(panel: NoteSidePanel) {
         this.notePanels.delete(panel);
     }
@@ -3493,6 +3596,8 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         this.cleanupActivePreview();
         for (const other of this.previewCache.values()) if (other.doc === doc) other.dock?.close();
         this.notePanels.add(new NoteSidePanel(doc, file, host, content, this));
+        // The panel saved itself while it was made, before it was on the list.
+        this.savePanels();
         return true;
     }
 
@@ -4525,6 +4630,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     private updatePreviewNavigationControls(previewEl: HTMLElement, controller: PreviewFrameController) {
+        if (previewEl.hasClass('is-docked')) this.savePanels();
         const addressInput = previewEl.querySelector('.preview-address-input');
         if (addressInput instanceof HTMLInputElement && addressInput.ownerDocument.activeElement !== addressInput) {
             addressInput.value = this.getPreviewFrameUrl(controller);

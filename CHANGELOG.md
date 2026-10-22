@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Browser keys in the preview: Cmd+[ and Cmd+] go back and forward, Cmd+L selects the address (Ctrl on Windows and Linux); a preview opened by a click takes focus, so they work at once, and closing it hands focus back.
 - `api.openNote(path, { anchor })` shows a vault note in the side panel beside a note or board, with zoom, in Reading view or Live Preview for editing, with back and forward through the notes it showed (hold either for the list), and the note's folders as breadcrumbs that open each folder's docs.
 
+- Side panels come back after a restart: a note panel with its history and place in it, a docked preview at its page (without its back history), each on the tab it was open on.
+
 ### Changed
 
 - The side panel docks beside a Kanban board as well as beside a note, and beside the note or board the preview was opened from.
