@@ -54,6 +54,12 @@
     pointer-events: none;
 }
 
+/* A floating preview sits above a docked panel's divider (popover + 2), so the divider's line never crosses it
+   (Ovi, 23 Oct). */
+.hover-popup:not(.is-docked) {
+    z-index: calc(var(--layer-popover, 30) + 3);
+}
+
 /* Docked, the panel draws no border of its own: the page's edges above, below and at the right already have theirs, and
    the divider's line is the one edge it adds, where it splits the page (Ovi, 22 Oct). */
 .hover-popup.is-docked {
