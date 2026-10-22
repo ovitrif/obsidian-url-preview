@@ -467,6 +467,8 @@ class NoteSidePanel extends DockedSidePanel {
     private showAt(index: number) {
         this.at = index;
         this.file = this.history[index];
+        // Which note the panel shows, for other plugins: Agents Board outlines that note's card.
+        this.element.dataset.notePath = this.file.path;
         this.renderTitle();
         void this.open();
         this.plugin.savePanels();

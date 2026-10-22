@@ -54,7 +54,10 @@
     pointer-events: none;
 }
 
+/* Docked, the panel draws no border of its own: the page's edges above, below and at the right already have theirs, and
+   the divider's line is the one edge it adds, where it splits the page (Ovi, 22 Oct). */
 .hover-popup.is-docked {
+    border: none;
     border-radius: 0;
     box-shadow: none;
     min-height: 0;
