@@ -81,11 +81,27 @@
     background: var(--background-modifier-border);
 }
 
-.url-preview-divider:hover::after,
-.url-preview-divider:focus-visible::after,
-.url-preview-divider.is-dragging::after {
-    width: 3px;
-    background: var(--interactive-accent);
+/* Hovered or dragged, the divider glows as Arc's sidebar edges do (Ovi, 22 Oct): an accent line brightest in the
+   middle, fading out toward both ends. */
+.url-preview-divider::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 160ms;
+    background: radial-gradient(
+        ellipse 400% 50% at 50% 50%,
+        var(--color-accent, var(--interactive-accent)) 0%,
+        color-mix(in srgb, var(--color-accent, var(--interactive-accent)) 40%, transparent) 40%,
+        transparent 85%
+    ) center / 2px 100% no-repeat;
+}
+
+.url-preview-divider:hover::before,
+.url-preview-divider:focus-visible::before,
+.url-preview-divider.is-dragging::before {
+    opacity: 1;
 }
 
 .url-preview-divider.is-hidden {
