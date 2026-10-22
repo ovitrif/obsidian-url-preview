@@ -17,6 +17,7 @@ import {
     Platform,
     Plugin,
     PluginSettingTab,
+    Scope,
     SettingGroup,
     WorkspaceLeaf,
     normalizePath,
@@ -138,6 +139,21 @@ const SIDE_PANEL_MIN_WIDTH = 280;
 const PREVIEW_CACHE_LIMIT = 5;
 const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
 const GITHUB_HOVER_CARD_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/** A preview keyboard shortcut. */
+type PreviewShortcut = 'back' | 'forward' | 'address';
+
+/**
+ * The preview shortcut a key press asks for: Cmd+[ back, Cmd+] forward, Cmd+L the address bar (Ctrl on Windows and
+ * Linux). `mod` is that platform modifier; `other` any other modifier held, which makes it no shortcut.
+ */
+function previewShortcut(press: { key: string; mod: boolean; other: boolean }): PreviewShortcut | null {
+    if (!press.mod || press.other) return null;
+    if (press.key === '[') return 'back';
+    if (press.key === ']') return 'forward';
+    if (press.key === 'l' || press.key === 'L') return 'address';
+    return null;
+}
 
 interface CachedPreview {
     // `url` follows the page as it navigates and redirects, so on its own it stops matching
@@ -1174,6 +1190,13 @@ export default class LinkPreviewPlugin extends Plugin {
                     }
                 }
             }, { capture: true });
+
+            // The same shortcuts while focus is in a preview's toolbar or address bar (keys typed in the
+            // page itself arrive through the page's `before-input-event`, see `bindPreviewEscape`). A
+            // keymap scope holds them while focus is in a preview, so Obsidian's own hotkeys on those keys
+            // (a sidebar toggle, a checklist cycle) wait; outside a preview they stay Obsidian's.
+            scope.registerDomEvent(doc, 'focusin', () => this.syncPreviewKeymap(doc));
+            scope.registerDomEvent(doc, 'focusout', () => (doc.defaultView ?? window).setTimeout(() => this.syncPreviewKeymap(doc), 0));
 
             // Both are anchored to viewport points, so scrolling leaves them pinned over
             // whatever moved under them, and their hover zones go stale with them.
@@ -3696,7 +3719,19 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             if (!contents) return;
             let lastEscape = 0;
             const listener: Listener = (_event, input) => {
-                if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+                if (input.type !== 'keyDown') return;
+                // Cmd+[ and Cmd+] step back and forward, Cmd+L selects the address, as in a browser.
+                const action = previewShortcut({
+                    key: input.key,
+                    mod: Platform.isMacOS ? input.meta : input.control,
+                    other: input.alt || input.shift || (Platform.isMacOS ? input.control : input.meta),
+                });
+                if (action) {
+                    if (!input.isAutoRepeat || action !== 'address') this.runPreviewShortcut(previewEl, controller, action);
+                    lastEscape = 0;
+                    return;
+                }
+                if (input.isAutoRepeat) return;
                 if (input.key !== 'Escape' || input.alt || input.control || input.meta || input.shift) {
                     lastEscape = 0;
                     return;
@@ -4002,6 +4037,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
     }
 
     onunload() {
+        if (this.previewKeymap) {
+            this.app.keymap.popScope(this.previewKeymap);
+            this.previewKeymap = null;
+        }
         this.unloaded = true;
         this.markdownLinkMemo = undefined;
         this.bareUrlMemo = undefined;
@@ -4468,6 +4507,52 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         }
         return controller.fallbackHistoryIndex >= 0 &&
             controller.fallbackHistoryIndex < controller.fallbackHistory.length - 1;
+    }
+
+    /** The keymap scope holding the preview shortcuts while focus is in a preview, or null when none is pushed. */
+    private previewKeymap: Scope | null = null;
+
+    /** The preview whose element holds focus in `doc`, if any. */
+    private focusedPreview(doc: Document): CachedPreview | undefined {
+        const focused = doc.activeElement;
+        if (!focused) return undefined;
+        return [...this.previewCache.values()].find(entry => entry.doc === doc && entry.element.contains(focused));
+    }
+
+    /** Pushes the preview shortcuts' scope while focus is in a preview, and pops it once focus leaves. */
+    private syncPreviewKeymap(doc: Document) {
+        const inPreview = this.focusedPreview(doc) !== undefined;
+        if (inPreview && !this.previewKeymap) {
+            const keymap = new Scope(this.app.scope);
+            const bind = (key: string, action: PreviewShortcut) => keymap.register(['Mod'], key, (event) => {
+                const entry = [...this.previewCache.values()].find(candidate => candidate.element.contains(candidate.doc.activeElement));
+                if (!entry) return;
+                if (!(event.repeat && action === 'address')) this.runPreviewShortcut(entry.element, entry.controller, action);
+                return false;
+            });
+            bind('[', 'back');
+            bind(']', 'forward');
+            bind('l', 'address');
+            this.app.keymap.pushScope(keymap);
+            this.previewKeymap = keymap;
+        } else if (!inPreview && this.previewKeymap) {
+            this.app.keymap.popScope(this.previewKeymap);
+            this.previewKeymap = null;
+        }
+    }
+
+    /** Runs a preview keyboard shortcut: back, forward, or the address selected for typing over. */
+    private runPreviewShortcut(previewEl: HTMLElement, controller: PreviewFrameController, action: PreviewShortcut) {
+        if (action === 'back') this.goBackInPreview(controller);
+        else if (action === 'forward') this.goForwardInPreview(controller);
+        else {
+            const addressInput = previewEl.querySelector('.preview-address-input');
+            if (!(addressInput instanceof HTMLInputElement)) return;
+            addressInput.focus();
+            addressInput.select();
+            return;
+        }
+        this.updatePreviewNavigationControls(previewEl, controller);
     }
 
     private goBackInPreview(controller: PreviewFrameController) {

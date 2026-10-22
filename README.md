@@ -27,6 +27,10 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 - Sign in and out using the website's own controls inside the preview
 - Right-click an editor URL to convert it to a Markdown link using the page title
 
+## Keyboard
+
+While a preview has focus, the browser keys work in it: **Cmd+[** and **Cmd+]** go back and forward, and **Cmd+L** selects the address for typing (Ctrl on Windows and Linux). Escape twice closes it.
+
 ## Installation
 
 1. Open Obsidian Settings
