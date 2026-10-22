@@ -29,7 +29,7 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
 
 ## Keyboard
 
-While a preview has focus, the browser keys work in it: **Cmd+[** and **Cmd+]** go back and forward, and **Cmd+L** selects the address for typing (Ctrl on Windows and Linux). Escape twice closes it.
+While a preview has focus, the browser keys work in it: **Cmd+[** and **Cmd+]** go back and forward, and **Cmd+L** selects the address for typing (Ctrl on Windows and Linux).
 
 ## Installation
 
