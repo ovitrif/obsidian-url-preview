@@ -899,6 +899,13 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
     color: var(--text-normal);
 }
 
+/* Back and forward through the notes the panel showed, before the title, always shown as a tab's arrows are. */
+.url-preview-note-panel .preview-note-navigation {
+    display: flex;
+    flex: none;
+    align-items: center;
+}
+
 /* The panel's note is a Markdown view of its own (NoteSidePanel): it fills the frame, and its view header gives way to the
    panel's toolbar, which has the name, zoom, the Reading view / Live Preview switch, open and close. */
 .url-preview-note-panel .url-preview-note-frame > .workspace-leaf {
@@ -947,11 +954,11 @@ body.url-preview-hide-close-button .hover-popup[data-preview-url] .preview-close
 
 /* The note panel's toolbar shows only Close until the pointer is over it, as Arc's view header zoom does (Ovi, 17 Oct):
    the idle controls fade out and keep their room, so nothing moves on hover (Ovi, 21 Oct: "go like arc"). */
-.url-preview-note-panel .preview-buttons > :not(.preview-note-title, .preview-close-button) {
+.url-preview-note-panel .preview-buttons > :not(.preview-note-title, .preview-note-navigation, .preview-close-button) {
     transition: opacity 150ms ease, transform 150ms ease;
 }
 
-.url-preview-note-panel .preview-buttons:not(:hover, :focus-within) > :not(.preview-note-title, .preview-close-button) {
+.url-preview-note-panel .preview-buttons:not(:hover, :focus-within) > :not(.preview-note-title, .preview-note-navigation, .preview-close-button) {
     opacity: 0;
     transform: scale(0.96);
     pointer-events: none;

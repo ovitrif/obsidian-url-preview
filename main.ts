@@ -339,6 +339,11 @@ class NoteSidePanel extends DockedSidePanel {
     private readonly leaf: WorkspaceLeaf;
     private readonly modeBtn: HTMLButtonElement;
     private readonly indents: MutationObserver;
+    /** The notes this panel showed, in order, and where it stands among them (Ovi, 22 Oct: history like a tab's). */
+    private readonly history: TFile[] = [];
+    private at = -1;
+    private readonly backBtn: HTMLButtonElement;
+    private readonly forwardBtn: HTMLButtonElement;
     private static mode: NotePanelMode = 'preview';
 
     constructor(doc: Document, file: TFile, host: HTMLElement, content: HTMLElement, plugin: LinkPreviewPlugin) {
@@ -348,6 +353,9 @@ class NoteSidePanel extends DockedSidePanel {
         super(doc, element, host, content, plugin);
         this.file = file;
         const buttons = element.createDiv('preview-buttons');
+        const navigation = buttons.createDiv('preview-note-navigation');
+        this.backBtn = this.historyButton(navigation, -1);
+        this.forwardBtn = this.historyButton(navigation, 1);
         this.titleEl = buttons.createDiv('preview-note-title');
         // The task's file name, which a click copies (Ovi, 21 Oct: "I want to see the task filename that I can click to copy").
         this.titleEl.addEventListener('click', event => {
@@ -409,13 +417,90 @@ class NoteSidePanel extends DockedSidePanel {
         this.show(file);
     }
 
+    /** Shows `file`; a note other than the current one goes on the history after it, dropping what was ahead. */
     show(file: TFile) {
-        this.file = file;
+        if (this.history[this.at] !== file) {
+            this.history.splice(this.at + 1, Infinity, file);
+            this.at = this.history.length - 1;
+        }
+        this.showAt(this.at);
+    }
+
+    private showAt(index: number) {
+        this.at = index;
+        this.file = this.history[index];
         this.renderTitle();
         void this.open();
     }
 
+    /**
+     * Back (`step` -1) or forward (1) through the panel's history. Holding the button, or a right click, lists the notes
+     * further that way, nearest first, as a tab's arrows do.
+     */
+    private historyButton(parent: HTMLElement, step: -1 | 1): HTMLButtonElement {
+        const button = parent.createEl('button', { cls: `clickable-icon preview-navigation-${step < 0 ? 'back' : 'forward'}` });
+        setIcon(button, step < 0 ? 'arrow-left' : 'arrow-right');
+        this.plugin.setNoteToolbarTooltip(button, step < 0 ? 'Back' : 'Forward');
+        let hold: number | null = null;
+        let held = false;
+        const list = (event: MouseEvent) => {
+            const menu = new Menu();
+            for (let index = this.at + step; index >= 0 && index < this.history.length; index += step) {
+                const file = this.history[index];
+                menu.addItem(item => item.setTitle(file.basename).setIcon('file-text').onClick(() => this.goTo(index)));
+            }
+            const rect = button.getBoundingClientRect();
+            if (event.type === 'contextmenu') menu.showAtMouseEvent(event);
+            else menu.showAtPosition({ x: rect.left, y: rect.bottom }, button.ownerDocument);
+        };
+        const cancel = () => {
+            if (hold !== null) window.clearTimeout(hold);
+            hold = null;
+        };
+        button.addEventListener('pointerdown', event => {
+            if (event.button !== 0 || button.disabled) return;
+            held = false;
+            cancel();
+            hold = window.setTimeout(() => {
+                hold = null;
+                held = true;
+                list(event);
+            }, 400);
+        });
+        button.addEventListener('pointerup', cancel);
+        button.addEventListener('pointerleave', cancel);
+        button.addEventListener('contextmenu', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!button.disabled) list(event);
+        });
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            if (held) {
+                held = false;
+                return;
+            }
+            this.goTo(this.at + step);
+        });
+        return button;
+    }
+
+    /** The history entry at `index`; a note deleted since is dropped from it. */
+    private goTo(index: number) {
+        const file = this.history[index];
+        if (!file) return;
+        if (!this.plugin.app.vault.getFileByPath(file.path)) {
+            this.history.splice(index, 1);
+            if (index <= this.at) this.at--;
+            this.renderTitle();
+            return;
+        }
+        this.showAt(index);
+    }
+
     private renderTitle() {
+        this.backBtn.disabled = this.at <= 0;
+        this.forwardBtn.disabled = this.at >= this.history.length - 1;
         this.titleEl.empty();
         const name = this.titleEl.createSpan({ cls: 'preview-note-name', text: this.file.basename });
         this.plugin.setNoteToolbarTooltip(name, `Copy ${this.file.basename}`);
