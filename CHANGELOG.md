@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Command **Preview link at cursor**, so a preview can be opened from the keyboard or on a touch device.
 - An API for other plugins: `app.plugins.plugins['url-preview'].api.open(url, { anchor, side })` opens a preview of `url` beside `anchor`, or straight in the side panel with `side: true`.
-- Browser keys in the preview: Cmd+[ and Cmd+] go back and forward, Cmd+L selects the address (Ctrl on Windows and Linux).
+- Browser keys in the preview: Cmd+[ and Cmd+] go back and forward, Cmd+L selects the address (Ctrl on Windows and Linux); a preview opened by a click takes focus, so they work at once, and closing it hands focus back.
 - `api.openNote(path, { anchor })` shows a vault note in the side panel beside a note or board, with zoom, in Reading view or Live Preview for editing, with back and forward through the notes it showed (hold either for the list).
 
 ### Changed

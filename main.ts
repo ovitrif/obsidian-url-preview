@@ -2909,6 +2909,18 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         event.preventDefault();
         event.stopPropagation();
         this.openPreviewForLink(linkInfo);
+        // Focus goes to the preview it opened, so its keys (Cmd+[, Cmd+], Cmd+L, Escape) work at once;
+        // a side panel that took the link takes focus the same way.
+        if (this.activePreview) {
+            this.focusActivePreview();
+            return;
+        }
+        const panel = [...this.previewCache.values()].find(entry => entry.dock && entry.doc === linkInfo.element.ownerDocument &&
+            entry.dock.host.contains(linkInfo.element));
+        if (panel) {
+            panel.element.tabIndex = -1;
+            panel.element.focus({ preventScroll: true });
+        }
     }
 
     // Focus the preview itself so the keyboard can reach its toolbar and its page, and
