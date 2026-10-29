@@ -111,6 +111,7 @@ Uses `Platform.isMacOS` to determine modifier key (Meta vs Control) for editor m
 - ALWAYS lint before pushing (`npm run lint`). The `build` script includes linting automatically.
 - In dev mode, the `dist/` symlink handles deployment to the vault automatically. For production/release builds, copy built files manually: `cp main.js manifest.json styles.css "$VAULT/.obsidian/plugins/url-preview/"`
 - NEVER use direct style manipulation (`element.style.*`, `style.cssText`). Use CSS classes, `setCssStyles()`, or `setCssProps()` instead.
+- A docked side panel's divider lives beside its panel (`element.parentElement`), never on `body`: a note panel docks in the root split, where Agents Board's menus draw above the panel, and a divider on `body` sits outside Obsidian's isolated app container and draws over every menu (Ovi, 29 Oct: "please learn this for good"). After any change to the panel's or divider's mount or z-index, run Agents Board's `scripts/lab/menu-on-top.mjs` in `aivm`.
 
 ## Obsidian Plugin Guidelines
 
