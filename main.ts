@@ -192,7 +192,9 @@ abstract class DockedSidePanel {
         this.ratio = Number.isFinite(plugin.settings.sidePanelRatio) ? plugin.settings.sidePanelRatio : 0.5;
         host.addClass('url-preview-has-side-panel');
         element.addClass('is-docked');
-        this.divider = doc.body.createDiv('url-preview-divider');
+        // Beside its panel, in the same stacking context: a note panel lives in the root split, where a menu opened
+        // on the board draws above the panel and so above its divider too (Ovi, 29 Oct).
+        this.divider = (element.parentElement ?? doc.body).createDiv('url-preview-divider');
         this.divider.setAttr('role', 'separator');
         this.divider.setAttr('aria-label', 'Resize note and preview');
         this.divider.setAttr('aria-orientation', 'vertical');
