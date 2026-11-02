@@ -361,6 +361,8 @@ const NOTE_CLOSE_EVENT = 'url-preview-note-close';
 type NotePanelMode = 'preview' | 'source';
 
 /** Obsidian's own list marker rule for Live Preview's wrapped-line indent. */
+/** A line given its indent this often is left as the editor draws it. */
+const MAX_INDENT_FIXES = 3;
 const LIST_MARKER = /^([>\s]*)(([*+-] |(\d+)([.)] ))(?:\[(.)\] )?)?/;
 
 class NoteSidePanel extends DockedSidePanel {
@@ -378,7 +380,8 @@ class NoteSidePanel extends DockedSidePanel {
     private at = -1;
     private readonly backBtn: HTMLButtonElement;
     private readonly forwardBtn: HTMLButtonElement;
-    private static mode: NotePanelMode = 'preview';
+    // Live Preview first: a note opened beside the board is usually opened to edit (Ovi, 3 Nov).
+    private static mode: NotePanelMode = 'source';
 
     constructor(doc: Document, file: TFile, host: HTMLElement, content: HTMLElement, plugin: LinkPreviewPlugin) {
         // Inside the main workspace, where the theme's note styles reach (Arc scopes its reading and Live Preview rules
@@ -624,33 +627,56 @@ class NoteSidePanel extends DockedSidePanel {
     }
 
     private readonly fixedIndents = new WeakMap<HTMLElement, string>();
+    /** How often each line was given its indent: a line the editor keeps rewriting is left as the editor draws it. */
+    private readonly indentFixes = new WeakMap<HTMLElement, number>();
+    private readonly pendingIndents = new Set<HTMLElement>();
 
     /**
      * Live Preview indents a wrapped list line by its marker's width, measured in screen pixels and written as CSS
      * pixels, so under the panel's zoom the indent shrinks twice. Each line Obsidian indents is measured again here
-     * and given its width at 100%, as a tab shows it.
+     * and given its width at 100%, as a tab shows it. The lines are measured in the editor's own measure cycle, once a
+     * frame: measuring inside this observer made CodeMirror redraw the lines, which woke the observer again, and the
+     * window froze (Ovi, 3 Nov: switching the runbook to edit mode).
      */
     private fixListIndents(frame: HTMLElement, records: MutationRecord[]) {
         const zoom = parseFloat(getComputedStyle(frame).getPropertyValue('zoom')) || 1;
         const view = this.leaf.view;
         if (zoom === 1 || !(view instanceof MarkdownView) || NoteSidePanel.mode !== 'source') return;
-        const cm = (view.editor as unknown as { cm: EditorView }).cm;
         for (const record of records) {
             const line = record.target;
             if (!(line instanceof HTMLElement) || !line.classList.contains('cm-line')) continue;
             const written = line.style.paddingInlineStart;
-            if (!written || this.fixedIndents.get(line) === written) continue;
-            const from = cm.state.doc.lineAt(cm.posAtDOM(line, 0));
-            const marker = LIST_MARKER.exec(from.text)?.[0];
-            const end = marker ? cm.coordsAtPos(from.from + marker.length, 1) : null;
-            if (!end) continue;
-            // The indent pair leaves the first line where it starts, so the marker's end is measured in place.
-            const rect = line.getBoundingClientRect();
-            const size = Math.floor(Math.abs(end.right - (rect.left + parseFloat(getComputedStyle(line).borderLeftWidth))) / zoom);
-            if (!size) continue;
-            this.fixedIndents.set(line, `${size}px`);
-            line.setCssStyles({ textIndent: `${-size}px`, paddingInlineStart: `${size}px` });
+            if (!written || this.fixedIndents.get(line) === written || (this.indentFixes.get(line) ?? 0) >= MAX_INDENT_FIXES) continue;
+            this.pendingIndents.add(line);
         }
+        if (!this.pendingIndents.size) return;
+        const cm = (view.editor as unknown as { cm: EditorView }).cm;
+        cm.requestMeasure({
+            key: this.pendingIndents,
+            read: () => {
+                const sizes: [HTMLElement, number][] = [];
+                for (const line of this.pendingIndents) {
+                    if (!line.isConnected || !cm.contentDOM.contains(line)) continue;
+                    const from = cm.state.doc.lineAt(cm.posAtDOM(line, 0));
+                    const marker = LIST_MARKER.exec(from.text)?.[0];
+                    const end = marker ? cm.coordsAtPos(from.from + marker.length, 1) : null;
+                    if (!end) continue;
+                    // The indent pair leaves the first line where it starts, so the marker's end is measured in place.
+                    const rect = line.getBoundingClientRect();
+                    const size = Math.floor(Math.abs(end.right - (rect.left + parseFloat(getComputedStyle(line).borderLeftWidth))) / zoom);
+                    if (size) sizes.push([line, size]);
+                }
+                this.pendingIndents.clear();
+                return sizes;
+            },
+            write: sizes => {
+                for (const [line, size] of sizes) {
+                    this.fixedIndents.set(line, `${size}px`);
+                    this.indentFixes.set(line, (this.indentFixes.get(line) ?? 0) + 1);
+                    line.setCssStyles({ textIndent: `${-size}px`, paddingInlineStart: `${size}px` });
+                }
+            },
+        });
     }
 
     /** Arc's sticky headings follow the panel's note (NOTE_RENDER_EVENT in AGENTS.md). */
