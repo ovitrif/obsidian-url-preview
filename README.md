@@ -17,7 +17,7 @@ A plugin for [Obsidian](https://obsidian.md) that shows a preview of external UR
   - Accent-colored border highlight on resize handle hover (uses Obsidian's accent color)
   - Live size indicator showing dimensions during resize
   - Optionally persist resized dimensions across previews
-- Preview controls live in a toolbar above the content, with back/forward navigation and an editable address bar
+- Preview controls live in a toolbar above the content, with back, forward and reload buttons and an editable address bar
 - Open one reusable right-side panel inside the current page, keeping your note on the left
 - Keep up to five recent previews in memory for immediate reopening with their scroll position preserved
 - Optionally show a small eye button beside hovered links to open the preview directly

@@ -112,6 +112,7 @@ interface PreviewWebviewElement extends HTMLElement {
     getURL(): string;
     canGoToOffset(offset: number): boolean;
     goToOffset(offset: number): void;
+    reload(): void;
     loadURL(url: string): Promise<void>;
     setAudioMuted(muted: boolean): void;
 }
@@ -4605,6 +4606,12 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         setIcon(forwardButton, 'arrow-right');
         this.setToolbarTooltip(forwardButton, 'Forward');
 
+        const reloadButton = navigation.createEl('button', {
+            cls: 'clickable-icon preview-navigation-reload',
+        });
+        setIcon(reloadButton, 'refresh-cw');
+        this.setToolbarTooltip(reloadButton, 'Reload');
+
         const addressInput = navigation.createEl('input', { cls: 'preview-address-input' });
         addressInput.setAttr('type', 'text');
         addressInput.setAttr('aria-label', 'Preview address');
@@ -4632,6 +4639,10 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
             event.stopPropagation();
             this.goForwardInPreview(controller);
             updateControls();
+        });
+        reloadButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this.reloadPreview(controller);
         });
         addressInput.addEventListener('click', (event) => event.stopPropagation());
         addressInput.addEventListener('keydown', (event) => {
@@ -4777,6 +4788,16 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         controller.fallbackHistoryIndex++;
         const url = controller.fallbackHistory[controller.fallbackHistoryIndex];
         if (url) this.navigatePreviewFrame(controller, url, false);
+    }
+
+    private reloadPreview(controller: PreviewFrameController) {
+        const frame = controller.element;
+        if (this.isPreviewWebview(frame) && frame.isConnected && controller.isReady) {
+            controller.startLoading?.();
+            frame.reload();
+            return;
+        }
+        this.navigatePreviewFrame(controller, this.getPreviewFrameUrl(controller), false);
     }
 
     private normalizeNavigationUrl(candidate: string): string | null {
