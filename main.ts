@@ -4956,7 +4956,7 @@ private formatGitHubHoverCardDisplayTitle(data: GitHubHoverCardData): GitHubHove
         });
 
         const resetZoomBtn = zoomControls.createEl('button', { cls: 'clickable-icon preview-zoom-button' });
-        setIcon(resetZoomBtn, 'scan-search');
+        setIcon(resetZoomBtn, 'minimize');
         this.setToolbarTooltip(resetZoomBtn, 'Reset zoom');
         resetZoomBtn.addEventListener('click', (event) => {
             event.stopPropagation();
