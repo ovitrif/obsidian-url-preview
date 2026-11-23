@@ -33,9 +33,10 @@
         0 0 0 1px rgba(255, 255, 255, 0.16);
 }
 
-/* Only the toolbar edge is rounded; never clip website corners. */
+/* A floating preview rounds all four corners, page included. A theme can set --url-preview-radius to match its own
+   window or pane corners. */
 .hover-popup:has(> .preview-buttons) {
-    border-radius: var(--radius-l) var(--radius-l) 0 0;
+    border-radius: var(--url-preview-radius, var(--radius-l));
 }
 
 /* Preview toolbar */
