@@ -709,11 +709,15 @@ class NoteSidePanel extends DockedSidePanel {
     }
 }
 
+const GITHUB_BADGE_IGNORED_SELECTOR = '.kanban-plugin, .menu, .agb-menu-layer, .notice-container, .tooltip';
+
 interface GitHubPullRequestBadgeObserver {
     observer: MutationObserver;
     scheduled: boolean;
     frame?: number;
     win?: Window;
+    /** Reading-view subtrees changed since the last pass; `null` rescans the whole document. */
+    roots: Set<Element> | null;
 }
 
 interface GitHubHoverCardData {
@@ -1262,6 +1266,20 @@ export default class LinkPreviewPlugin extends Plugin {
             // palette has claimed from one nothing wants. The floating preview used to close
             // from a bubble listener with no such check, so dismissing the palette — or, in
             // Vim mode, every exit from insert mode — closed it too.
+            // Obsidian closes its own menu on Escape in a listener that runs before any plugin's and leaves the key
+            // unhandled (measured on 1.15.1), so the menu is gone by the time the listener below runs. The menus sit
+            // directly in the body: note when one leaves, and let an Escape that closed one close nothing else.
+            let menuClosedAt = -1;
+            const noteMenuRemovals = (records: MutationRecord[]) => {
+                for (const record of records) {
+                    for (const node of Array.from(record.removedNodes)) {
+                        if (node.nodeType === Node.ELEMENT_NODE && (node as Element).classList.contains('menu')) menuClosedAt = performance.now();
+                    }
+                }
+            };
+            const menus = new MutationObserver(noteMenuRemovals);
+            menus.observe(doc.body, { childList: true });
+            scope.register(() => menus.disconnect());
             scope.registerDomEvent(doc, 'keydown', (e: KeyboardEvent) => {
                 // Anything else typed in between ends the pairing, and a held key repeats
                 // roughly every 30 ms, which must not count as a deliberate second press.
@@ -1279,6 +1297,10 @@ export default class LinkPreviewPlugin extends Plugin {
                 // fields: docking with the mouse leaves focus on the toolbar's dock button,
                 // and excluding the whole toolbar left that panel with no Escape at all.
                 if (focused instanceof HTMLInputElement && focused.closest('.preview-buttons')) return;
+                // An open menu, popover or board search owns this Escape: closing a panel under it too loses the panel.
+                if (doc.querySelector('.menu, .agb-search')) return;
+                noteMenuRemovals(menus.takeRecords());
+                if (menuClosedAt >= e.timeStamp) return;
                 // A floating preview closes wherever focus is: unlike the panel, Escape is
                 // how you dismiss it, and focus usually never left the note.
                 if (this.activePreview?.doc === doc) {
@@ -1297,17 +1319,29 @@ export default class LinkPreviewPlugin extends Plugin {
                     }
                     this.editorEscapeArmed = false;
                     this.cleanupActivePreview();
+                    e.preventDefault();
                     return;
                 }
                 // Focus in the note is not a request to close the panel — Escape is an
                 // ordinary editing key there, and a per-keystroke idiom in Vim mode.
                 const unfocused = !focused || focused === doc.body;
+                let closed = false;
                 for (const entry of [...this.previewCache.values()]) {
                     if (entry.doc !== doc || !entry.dock) continue;
                     if (unfocused || entry.element.contains(focused) || entry.dock.divider.contains(focused)) {
                         entry.dock.close();
+                        closed = true;
                     }
                 }
+                // A note panel holds an editor, where Escape is an editing key: only its toolbar and divider close it.
+                for (const panel of [...this.notePanels]) {
+                    if (panel.doc !== doc) continue;
+                    if (unfocused || panel.divider.contains(focused) || focused?.closest('.preview-buttons') && panel.element.contains(focused)) {
+                        panel.close();
+                        closed = true;
+                    }
+                }
+                if (closed) e.preventDefault();
             }, { capture: true });
 
             // The same shortcuts while focus is in a preview's toolbar or address bar (keys typed in the
@@ -1377,8 +1411,9 @@ export default class LinkPreviewPlugin extends Plugin {
 
         this.syncGitHubPullRequestBadgeVisibility(doc);
         const observerState: GitHubPullRequestBadgeObserver = {
-            observer: new MutationObserver(() => this.scheduleGitHubPullRequestBadgeUpdate(doc)),
+            observer: new MutationObserver((records) => this.queueGitHubPullRequestBadgeRoots(doc, records)),
             scheduled: false,
+            roots: null,
         };
         this.githubPullRequestBadgeObservers.set(doc, observerState);
         observerState.observer.observe(doc.body, { childList: true, subtree: true });
@@ -1397,9 +1432,37 @@ export default class LinkPreviewPlugin extends Plugin {
         doc.body.removeClass('url-preview-hide-github-pr-badges');
     }
 
-    private scheduleGitHubPullRequestBadgeUpdate(doc: Document) {
+    /** Board, menu, notice and tooltip churn never holds a rendered link; only reading-view subtrees are rescanned. */
+    private queueGitHubPullRequestBadgeRoots(doc: Document, records: MutationRecord[]) {
         const observerState = this.githubPullRequestBadgeObservers.get(doc);
-        if (!observerState || observerState.scheduled) return;
+        if (!observerState) return;
+        const before = observerState.roots?.size ?? -1;
+        for (const record of records) {
+            const target = record.target;
+            if (target.nodeType !== Node.ELEMENT_NODE) continue;
+            const element = target as Element;
+            if (element.closest(GITHUB_BADGE_IGNORED_SELECTOR)) continue;
+            const owner = element.closest('.markdown-preview-view');
+            if (owner) {
+                observerState.roots?.add(owner);
+                continue;
+            }
+            for (const node of Array.from(record.addedNodes)) {
+                if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                const added = node as Element;
+                if (added.matches('.markdown-preview-view')) observerState.roots?.add(added);
+                added.querySelectorAll('.markdown-preview-view').forEach((view) => observerState.roots?.add(view));
+            }
+        }
+        if (observerState.roots && observerState.roots.size === before) return;
+        this.scheduleGitHubPullRequestBadgeUpdate(doc, false);
+    }
+
+    private scheduleGitHubPullRequestBadgeUpdate(doc: Document, full = true) {
+        const observerState = this.githubPullRequestBadgeObservers.get(doc);
+        if (!observerState) return;
+        if (full) observerState.roots = null;
+        if (observerState.scheduled) return;
 
         observerState.scheduled = true;
         const win = doc.defaultView ?? window;
@@ -1408,17 +1471,21 @@ export default class LinkPreviewPlugin extends Plugin {
             observerState.scheduled = false;
             observerState.frame = undefined;
             if (!this.githubPullRequestBadgeObservers.has(doc)) return;
-            this.updateGitHubPullRequestBadges(doc);
+            const roots = observerState.roots;
+            observerState.roots = new Set();
+            this.updateGitHubPullRequestBadges(doc, roots);
         });
     }
 
-    private updateGitHubPullRequestBadges(doc: Document) {
+    private updateGitHubPullRequestBadges(doc: Document, roots: Set<Element> | null = null) {
         if (!this.settings.showGitHubPullRequestIds) {
             doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => badge.remove());
             return;
         }
 
-        const links = Array.from(doc.querySelectorAll('a[href]'));
+        const scopes: ParentNode[] = roots ? Array.from(roots).filter((root) => root.isConnected) : [doc];
+        const all = (selector: string) => scopes.flatMap((scope) => Array.from(scope.querySelectorAll(selector)));
+        const links = all('a[href]');
         for (const link of links) {
             if (!(link instanceof HTMLAnchorElement)) continue;
             // Kanban cards render their own number line; badges there only crowd the card.
@@ -1455,7 +1522,7 @@ export default class LinkPreviewPlugin extends Plugin {
         }
 
         // A badge belongs directly after its link; anything else is an orphan left by other DOM edits.
-        doc.querySelectorAll('.url-preview-github-pr-badge').forEach((badge) => {
+        all('.url-preview-github-pr-badge').forEach((badge) => {
             // Editor badges are CodeMirror widgets owned by the editor extension, never orphans.
             if (badge.closest('.cm-editor')) return;
             const previous = badge.previousElementSibling;
@@ -1707,6 +1774,7 @@ export default class LinkPreviewPlugin extends Plugin {
 
         this.updateGitHubHoverCardAtPoint(
             target.ownerDocument,
+            target,
             { x: event.clientX, y: event.clientY },
             this.getModifierState(event)
         );
@@ -1719,22 +1787,18 @@ export default class LinkPreviewPlugin extends Plugin {
         return Boolean(state && target instanceof win.Node && state.element.contains(target));
     }
 
-    private updateGitHubHoverCardAtPoint(doc: Document, point: ScreenPoint, modifiers: ModifierState) {
+    private updateGitHubHoverCardAtPoint(doc: Document, target: Element, point: ScreenPoint, modifiers: ModifierState) {
         if (!this.settings.showGitHubHoverCard) {
             this.hideGitHubHoverCard(doc);
             return;
         }
 
-        const target = doc.elementFromPoint(point.x, point.y);
         const state = this.githubHoverCards.get(doc);
+        // Most moves happen with no card shown or pending and no modifier held: nothing can change.
+        if (!this.areConfiguredModifiersPressed(modifiers) && !state?.linkInfo && !state?.pendingKey && !state?.key) return;
 
         if (state?.linkInfo && this.isSourceModeMarkdownTarget(state.linkInfo.element)) {
             this.hideGitHubHoverCard(doc);
-            return;
-        }
-
-        if (!(target instanceof Element)) {
-            this.scheduleGitHubHoverCardHide(doc);
             return;
         }
 

@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A note in the side panel no longer freezes Obsidian when switched to Live Preview at a zoom other than 100%.
+- Escape that closes a menu, popover or board search no longer closes the side panel too; Escape closes a note panel as it closes a docked preview.
+- Moving the mouse and changes on a board or in menus no longer rescan every link in the window.
 
 ### Changed
 
